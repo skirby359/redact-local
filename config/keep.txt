@@ -1,0 +1,205 @@
+# Global keep list: terms that are never redacted, in any profile.
+#
+# One term per line. Matching ignores case, extra spaces, and missing periods,
+# so "GitHub Inc" also covers "GITHUB, INC." if you list "GitHub, Inc.".
+# A detection that falls entirely inside a keep-list term is left alone.
+#
+# names.txt still wins: a person you list in names.txt is redacted even if
+# their name contains a keep-list word. (The reverse is handled too: if your
+# client is "Jane Washington", the tool won't redact the word "Washington"
+# on its own, because it's on this list.)
+#
+# Add false positives here (an org or product the model took for a person),
+# then rerun. For one matter only, use <matter>/_redact/keep.txt instead.
+# For additions you don't want to publish or commit (a company's address
+# from its email footers, say), use config/keep.local.txt: it is loaded in
+# every profile and ignored by git.
+#
+# This seed is a starting point for Washington legal work. Trim or extend it.
+
+# --- Platforms and tech companies ---
+GitHub
+GitHub, Inc.
+GitHub Inc
+GitHub Support
+GitHub Copilot
+GitHub Actions
+Microsoft
+Microsoft Corporation
+Microsoft Corp
+Azure
+LinkedIn
+Google
+Google LLC
+Gmail
+YouTube
+Alphabet
+Apple
+Apple Inc.
+iCloud
+Amazon
+Amazon.com
+Amazon Web Services
+AWS
+Meta
+Meta Platforms
+Facebook
+Instagram
+WhatsApp
+X Corp
+Twitter
+Reddit
+TikTok
+Discord
+Slack
+Zoom
+Dropbox
+PayPal
+Venmo
+Cash App
+Stripe
+Airbnb
+Uber
+Lyft
+npm
+
+# --- Platform policy vocabulary ---
+Trust & Safety
+Trust and Safety
+Terms of Service
+Terms of Use
+Privacy Policy
+Acceptable Use Policy
+Acceptable Use Policies
+Community Guidelines
+Community Standards
+DMCA
+Digital Millennium Copyright Act
+
+# --- Civil-liberties and legal-aid organizations ---
+EFF
+Electronic Frontier Foundation
+ACLU
+ACLU of Washington
+American Civil Liberties Union
+Northwest Justice Project
+NJP
+Columbia Legal Services
+CLEAR
+Legal Counsel for Youth and Children
+King County Bar Association
+Washington Defender Association
+Northwest Immigrant Rights Project
+NWIRP
+
+# --- Places (city- and state-level places are kept anyway; these stop false hits) ---
+Washington
+Washington State
+State of Washington
+WA
+United States
+U.S.
+USA
+Seattle
+Olympia
+Tacoma
+Spokane
+
+# --- Washington courts ---
+Washington State Supreme Court
+Washington Supreme Court
+Supreme Court
+Court of Appeals
+Washington Court of Appeals
+Division I
+Division II
+Division III
+Division One
+Division Two
+Division Three
+Superior Court
+King County Superior Court
+Pierce County Superior Court
+Snohomish County Superior Court
+Spokane County Superior Court
+Clark County Superior Court
+Thurston County Superior Court
+Kitsap County Superior Court
+Whatcom County Superior Court
+Yakima County Superior Court
+Benton County Superior Court
+District Court
+King County District Court
+Municipal Court
+Seattle Municipal Court
+U.S. District Court
+United States District Court
+Western District of Washington
+Eastern District of Washington
+W.D. Wash.
+E.D. Wash.
+Ninth Circuit
+U.S. Court of Appeals for the Ninth Circuit
+Court of Appeals for the Ninth Circuit
+U.S. Supreme Court
+United States Supreme Court
+
+# --- Washington agencies and offices ---
+Attorney General
+Attorney General's Office
+Office of the Attorney General
+Washington State Attorney General
+AGO
+Secretary of State
+Office of the Secretary of State
+Public Disclosure Commission
+PDC
+Public Records Act
+Department of Licensing
+DOL
+Department of Social and Health Services
+DSHS
+Department of Labor and Industries
+Labor & Industries
+L&I
+Employment Security Department
+ESD
+Department of Corrections
+DOC
+Washington State Patrol
+WSP
+Washington State Bar Association
+WSBA
+Administrative Office of the Courts
+AOC
+Office of Administrative Hearings
+OAH
+Washington State Human Rights Commission
+Human Rights Commission
+Department of Revenue
+Department of Health
+DOH
+Department of Ecology
+Department of Children, Youth, and Families
+DCYF
+Washington State Legislature
+Legislature
+King County
+Pierce County
+Snohomish County
+Spokane County
+Clark County
+Thurston County
+Kitsap County
+Whatcom County
+Yakima County
+Benton County
+
+# --- Party labels the model sometimes mistakes for names ---
+Plaintiff
+Defendant
+Petitioner
+Respondent
+Appellant
+Appellee
+Pro Se

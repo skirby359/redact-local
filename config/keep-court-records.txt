@@ -1,0 +1,13 @@
+# Extra keep list for the court-records profile only.
+#
+# Add the judges, commissioners and counsel of record whose names you have
+# decided may stay in public court records. One name per line. Same matching
+# rules as keep.txt.
+#
+# This is a policy call, so the list starts empty. The court-records profile
+# also keeps names that directly follow a judicial title ("Judge", "Hon.",
+# "Commissioner"...) and names on a line with a WSBA number. Those are
+# listed in review.html under "Kept by policy" so you can check them.
+#
+# Voter data stays strict even though it's public record: never run voter
+# files through the court-records profile.

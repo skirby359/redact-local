@@ -1,0 +1,77 @@
+# redact-local profiles.
+#
+# A profile decides how strict a run is. Pick one with --profile; the default
+# is "client".
+#
+# Choosing a looser profile is a policy call that you make, not the tool.
+# "court-records" leaves judges, counsel and case citations in place because
+# they are public record. That reasoning does NOT extend to voter data:
+# voter files are public record too, but they stay on the strict "client"
+# profile. Never run voter data through court-records.
+#
+# Every profile starts from [defaults] and overrides what it lists.
+
+[defaults]
+# The spaCy model that finds person names. Installed in the venv; the tool
+# never downloads it (the network guard would stop it anyway).
+spacy_model = "en_core_web_lg"
+
+# Presidio confidence cutoff. Lower catches more and over-redacts more.
+score_threshold = 0.4
+
+# Categories that get replaced with placeholders. Entries in names.txt are
+# always redacted, whatever this list says.
+#   PERSON          names spotted by spaCy
+#   EMAIL, PHONE    contact details
+#   HANDLE          @handles and profile URLs (github.com/<user>, x.com/<user>, ...)
+#   SSN, DRIVER-LICENSE, CARD, IBAN, IP
+#   ADDRESS         street addresses and PO boxes (city and state are kept)
+#   DOB             dates next to "DOB", "date of birth", "born"
+#   TICKET          ticket, case, account, order... numbers, and #1234567
+# Also available, off by default: LOCATION, ORG, DATE, NRP.
+redact = [
+  "PERSON", "EMAIL", "PHONE", "HANDLE",
+  "SSN", "DRIVER-LICENSE", "CARD", "IBAN", "IP",
+  "ADDRESS", "DOB", "TICKET",
+]
+
+# Keep lists to load, from this config folder. <matter>\_redact\keep.txt is
+# always added if it exists.
+keep_files = ["keep.txt"]
+
+# How names in names.txt are expanded. For "Jane Q. Example":
+#   full          Jane Q. Example, and Jane Example (middle names dropped)
+#   last-first    Example, Jane
+#   initial-last  J. Example
+#   first         Jane on its own
+#   last          Example on its own
+# A one-word variant that is also an ordinary word ("Will", "Grant") only
+# matches when capitalized. One that is on a keep list is skipped.
+name_variants = ["full", "last-first", "initial-last", "first", "last"]
+
+# Leave the case name inside a legal citation alone ("State v. Example,
+# 123 Wn.2d 456"). The reporter/statute part of a citation is always kept.
+protect_citation_names = false
+
+# Leave court case numbers (23-2-01234-1 SEA, 12345-6-I) and WSBA numbers alone.
+protect_case_numbers = false
+
+# Keep a name that directly follows a judicial title, or sits on a line with
+# a WSBA number (counsel of record).
+keep_titled_officials = false
+official_titles = [
+  "Judge", "Justice", "Chief Justice", "Hon.", "Honorable", "The Honorable",
+  "Commissioner", "Court Commissioner", "Magistrate", "Judge Pro Tem",
+]
+
+
+[profiles.client]
+description = "Strict default. Every person not on a keep list is redacted, including names inside citations."
+
+
+[profiles.court-records]
+description = "Public court records. Keeps judges, counsel and citations; still removes contact details and IDs."
+keep_files = ["keep.txt", "keep-court-records.txt"]
+protect_citation_names = true
+protect_case_numbers = true
+keep_titled_officials = true
