@@ -26,5 +26,6 @@ build/
 dist/
 .pytest_cache/
 .ruff_cache/
+.model/
 .venv/
 venv/

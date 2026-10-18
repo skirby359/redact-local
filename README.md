@@ -1,5 +1,7 @@
 # redact-local
 
+[![tests](https://github.com/skirby359/redact-local/actions/workflows/tests.yml/badge.svg)](https://github.com/skirby359/redact-local/actions/workflows/tests.yml)
+
 De-identify a folder of documents **on this machine**, before Claude reads any of it.
 
 Reading a file in a Claude Code session sends its contents to a hosted model. There is
@@ -26,8 +28,8 @@ citation patterns are tuned for Washington State legal work; the rest is general
 
 ## Installing
 
-Tested on Windows 11 with Python 3.13. It should work on macOS and Linux (the code uses
-no Windows-only APIs), but that hasn't been tested.
+Developed on Windows 11 with Python 3.13; the test suite also passes on Linux with
+Python 3.11 (CI runs both). macOS should work but hasn't been tested.
 
 Install from a clone, in editable mode. The keep lists and profiles in `config/` are meant
 to be edited, and the tool reads them from the clone.
