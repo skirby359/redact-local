@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from conftest import CLIENT, CLIENT_EMAIL, CONFIG, OTHER, assert_no_secrets, cli, out_dir, outputs, run
+from conftest import CLIENT, CLIENT_EMAIL, CONFIG, NAMES_TXT, OTHER, assert_no_secrets, cli, out_dir, outputs, run
 
 from redact_local import detect, restore
 from redact_local.errors import SafeError
@@ -84,6 +84,24 @@ def test_file_names_with_camelcase_and_digits(matter):
     run(matter)
     names = " ".join(outputs(matter)).lower()
     assert "fakerton" not in names
+
+
+def test_email_attachment_names_are_analyzed_like_file_names(matter):
+    # "RobertFakename2024.docx" is one token to the model; split, it's a person. A names.txt
+    # entry still matches the name as written ("DelphineMcFakerton"), so nothing is lost.
+    from email.message import EmailMessage
+
+    _names(matter, NAMES_TXT + "Delphine McFakerton => WITNESS\n")
+    msg = EmailMessage()
+    msg["From"], msg["To"], msg["Subject"] = "support@example.org", "someone@example.org", "Statements"
+    msg.set_content("See attached.")
+    for fn in (OTHER.replace(" ", "") + "2024.docx", "DelphineMcFakerton_statement.pdf"):
+        msg.add_attachment(b"x", maintype="application", subtype="octet-stream", filename=fn)
+    (matter / "mail.eml").write_bytes(bytes(msg))
+    run(matter)
+    out = _only_output(matter)
+    assert "fakename" not in out.lower() and "mcfakerton" not in out.lower()
+    assert "[PERSON-" in out and "[WITNESS]" in out
 
 
 def test_name_suffixes_last_first_entries_and_hyphenated_surnames(matter):

@@ -46,9 +46,9 @@ The CLI runs from its own venv, with `-I` so nothing in the current folder is im
 ```
 
 Exit codes: 0 ok · 1 error · 2 bad arguments · 3 a network attempt was blocked (treat
-the run as failed and tell the user) · 4 some files couldn't be read or written (the rest
-were written; the review sheet's Files table says which), or an earlier output couldn't
-be removed. **If the CLI prints a WARNING about an earlier output, tell the user and don't
+the run as failed and tell the user) · 4 some files, or files attached to a PDF, couldn't
+be read or written (the rest were written; the review sheet's Files table says which), or
+an earlier output couldn't be removed. **If the CLI prints a WARNING about an earlier output, tell the user and don't
 read the output folder until a rerun no longer shows it.** That file may carry an older,
 less-redacted name.
 

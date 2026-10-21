@@ -189,7 +189,41 @@ strict** even though it's public record: never run voter files through `court-re
 - **Redacted**: every distinct value with placeholder, category, count, detector and files.
 - **Kept**: values a detector flagged but a keep list, citation or title rule kept.
 - Keep-list terms found, and orgs/places/dates kept by policy (collapsed).
-- **Files**: how each was read (text layer, OCR pages, embedded images) and any failures.
+- **Files**: how each was read (text layer, OCR pages, embedded images, attached files)
+  and any failures.
+
+### Check key.csv for look-alike variants
+
+After each run, open `<matter>\_redact\key.csv` yourself (Claude must not) and scan
+each category for near-duplicates. These are one person, address or username split across
+several placeholders because a character or two differs. For example,
+`jexample0x@example.me`, `jexampleOx@example.me` and `jexampleox@example.me` would come out
+as three separate `[EMAIL-n]`s. The usual causes:
+
+- **OCR confusions** in screenshots and scanned pages: `0`/`O`/`o`, `1`/`l`/`I`,
+  `rn`/`m`, `5`/`S`, a dropped or extra `.`. When the source is an image, there's no way
+  to recover which character was really there. Ask for the original (an `.eml`, or a
+  text PDF) if it matters.
+- **Characters from another alphabet**: Cyrillic `о а е х с р` look identical to Latin
+  `o a e x c p` but are different characters, so they don't match. Case, Unicode
+  compatibility forms and zero-width characters are already folded; look-alike letters
+  aren't.
+- **Real aliases**: one mailbox under several domains (Proton's `@proton.me`,
+  `@protonmail.com` and `@pm.me`, for example).
+
+**Why it matters:**
+- Anyone reading the redacted text, Claude included, will take three placeholders as
+  three different people or addresses and may reason from that.
+- `restore` puts each variant back exactly as captured, so a misread version goes back
+  into your draft. Proofread restored copies.
+
+**Fix:** list every variant on the person's line in `names.txt` and rerun. They become
+`[CLIENT-EMAIL]`, `[CLIENT-EMAIL-2]`, `[CLIENT-EMAIL-3]`..., so it's clear they belong to
+one person. Put the correct spelling first and draft with that placeholder.
+
+```
+Jane Example | jexample0x@example.me | jexampleOx@example.me | jexampleox@example.me => CLIENT
+```
 
 ## Restore
 
@@ -231,7 +265,15 @@ venv, so lift it while updating packages).
   detected unless they're in names.txt.
 - OCR quality depends on the image. Low-contrast or tiny text can come out garbled, and a
   garbled name may slip past detection (it will usually show up as a possible miss).
+- OCR misreads and look-alike letters from other alphabets split one identity into several
+  placeholders. They aren't merged automatically. See
+  [Check key.csv for look-alike variants](#check-keycsv-for-look-alike-variants).
 - EML attachments are named, not opened: save them into the matter folder to include them.
+  Files attached to a PDF (a PDF Portfolio's documents, whose only page is usually a cover
+  sheet, and paperclip attachments on a page) *are* read if they're a supported type. The
+  rest are counted as "not opened"; one that can't be read makes the run partial (exit 4).
+- PDF comments (sticky notes, comments on highlights) aren't extracted. Text boxes drawn on
+  the page are.
 - DOCX: footnotes, comments and text boxes aren't extracted.
 - English only.
 
@@ -245,9 +287,10 @@ venv, so lift it while updating packages).
 All fixtures are synthetic and generated in code (Quentin Fakerton, Marisol Testwell...).
 The suite covers names.txt roles and variants, the keep list, citations in both profiles,
 placeholder stability across files and reruns, redacted file names, OCR on a rendered PNG,
-PDF text layer and scanned-page fallback, EML and DOCX, restore round trips (text and
-DOCX), the network guard, and a check that the CLI's stdout and stderr never contain any
-fake name or value, including when a file fails.
+PDF text layer and scanned-page fallback, files attached to PDFs (portfolios, paperclips,
+nesting, unreadable attachments), EML and DOCX, restore round trips (text and DOCX), the
+network guard, and a check that the CLI's stdout and stderr never contain any fake name or
+value, including when a file fails.
 
 ## Layout
 

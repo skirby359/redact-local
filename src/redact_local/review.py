@@ -114,6 +114,10 @@ def write(path: Path, *, matter: Path, out_dir: Path, profile, files: list, skip
                 bits.append(f"{ex.pages} page(s): {ex.text_pages} text layer, {ex.ocr_pages} OCR")
                 if ex.ocr_regions:
                     bits.append(f"{ex.ocr_regions} embedded image(s) OCR'd")
+                if ex.attachments:
+                    bits.append(f"{ex.attachments} attached file(s) read")
+                if ex.attachments_failed:
+                    bits.append(f"{ex.attachments_failed} attached file(s) could not be read")
             detail = _e("; ".join(bits))
             if ex.notes:
                 detail += "<br><span class=small>" + "<br>".join(_e(n) for n in ex.notes) + "</span>"
@@ -125,6 +129,8 @@ def write(path: Path, *, matter: Path, out_dir: Path, profile, files: list, skip
         + (" (template just created; fill it in and rerun)" if names_info.get("created") else "")
         + (f", {names_info['bad_lines']} line(s) not understood" if names_info.get("bad_lines") else "")
     )
+    n = totals.get("attachments_failed")
+    attached_failed = f"{n} attached file(s) could not be read · " if n else ""
     page = f"""<!doctype html>
 <html lang=en><head><meta charset=utf-8>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
@@ -153,6 +159,7 @@ The lists carry over, so the next document of the same kind should need few or n
 
 <h2>Totals</h2>
 <p>{totals['files']} file(s) processed, {totals['skipped']} skipped, {totals['failed']} failed ·
+{attached_failed}
 {totals['redactions']} redaction(s), {totals['distinct']} distinct value(s) ·
 {totals['misses']} possible miss(es) · {totals['blocked']} network attempt(s) blocked</p>
 

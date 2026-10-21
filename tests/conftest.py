@@ -119,6 +119,42 @@ def render_png(path: Path, lines: list[str], size: int = 40) -> Path:
     return path
 
 
+def make_pdf(path: Path, tmp_path: Path) -> Path:
+    """Two pages: a text layer, then a scanned page with no text layer."""
+    import pymupdf
+    from PIL import Image
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), f"Letter to {CLIENT} at {CLIENT_EMAIL} about the lease.", fontsize=11)
+    scan = render_png(tmp_path / "scan.png", ["Scanned page", f"Signed by {CLIENT}"], size=48)
+    with Image.open(scan) as img:
+        w, h = img.size
+    # Sized so the 300 DPI render is the scan's own pixels: OCR on a full A4 page is ~5x slower.
+    page2 = doc.new_page(width=w * 72 / 300, height=h * 72 / 300)
+    page2.insert_image(page2.rect, filename=str(scan))
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+def make_portfolio(path: Path, tmp_path: Path) -> Path:
+    """A PDF Portfolio: a cover page telling you to open it in Acrobat, with the real
+    documents embedded. The embedded file names carry the fake client's name."""
+    import pymupdf
+
+    inner = make_pdf(tmp_path / "inner.pdf", tmp_path)
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "This portfolio is best viewed in a viewer that supports portfolios.", fontsize=11)
+    doc.embfile_add("letter", inner.read_bytes(), filename=f"{CLIENT} letter.pdf")
+    doc.embfile_add("note", f"Call {CLIENT} at {CLIENT_EMAIL}.".encode(), filename=f"{CLIENT} note.txt")
+    doc.embfile_add("sheet", b"PK\x03\x04 not really a spreadsheet", filename=f"{CLIENT} sheet.xlsx")
+    doc.xref_set_key(doc.pdf_catalog(), "Collection", "<</Type/Collection/View/D>>")
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
 def cli(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
     """Run the CLI in a fresh process exactly as the skill does (python -I -m redact_local)."""
     env = dict(os.environ, PYTHONIOENCODING="utf-8")

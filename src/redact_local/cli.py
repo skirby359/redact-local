@@ -102,6 +102,8 @@ def cmd_run(args) -> int:
         read.append(f"{_plural(pg['embedded_images_ocr'], 'embedded image')} OCR")
     if pg["images_ocr"]:
         read.append(f"{_plural(pg['images_ocr'], 'image file')} OCR")
+    if f["attachments_read"]:
+        read.append(_plural(f["attachments_read"], "file attached to a PDF", "files attached to PDFs"))
     if read:
         print("Read: " + "; ".join(read))
     cats = ", ".join(f"{c} {n}" for c, n in sorted(r["by_category"].items(), key=lambda kv: -kv[1]))
@@ -112,8 +114,14 @@ def cmd_run(args) -> int:
     if result.names_created:
         print(f"names.txt: none yet, so a template was created at {result.private / 'names.txt'}")
         print("  Add the people to remove, then rerun.")
+    if f["attachments_not_processed"]:
+        print(f"Attachments not opened: {f['attachments_not_processed']} (unsupported type, or attached to an email; "
+              "see the Files table in the review sheet)")
     if f["failed"]:
         print(f"{_plural(f['failed'], 'file')} could not be read; see the Files table in the review sheet.")
+    if f["attachments_failed"]:
+        print(f"{_plural(f['attachments_failed'], 'file attached to a PDF', 'files attached to PDFs')} could not be "
+              "read; see the Files table in the review sheet.")
     if s.get("stale_outputs_not_removed"):
         print(f"WARNING: {_plural(s['stale_outputs_not_removed'], 'earlier output file')} could not be removed "
               "(locked or read-only). It may carry an older, less-redacted name. Close it and rerun "
@@ -128,7 +136,7 @@ def cmd_run(args) -> int:
     if result.blocked:
         _print_blocked(result.blocked)
         return EXIT_NETWORK
-    return EXIT_PARTIAL if f["failed"] or s.get("stale_outputs_not_removed") else EXIT_OK
+    return EXIT_PARTIAL if f["failed"] or f["attachments_failed"] or s.get("stale_outputs_not_removed") else EXIT_OK
 
 
 def cmd_restore(args) -> int:

@@ -151,6 +151,28 @@ def _analyze_name(engine, part: str):
     return a
 
 
+def _analyze_text(engine, text: str):
+    """Analyze extracted text, and each attachment name an email lists the way a file name is.
+
+    To the model "RobertFakename2024.docx" is one token, so a person known only to
+    it (not to names.txt) would pass. Spans from the name are kept where nothing
+    in the text analysis already covers them.
+    """
+    from redact_local.extract import ATTACHMENT_NAME_LINE
+
+    a = engine.analyze(text)
+    for m in ATTACHMENT_NAME_LINE.finditer(text):
+        offset = m.start(1)
+        for sp in _analyze_name(engine, m.group(1)).spans:
+            start, end = sp.start + offset, sp.end + offset
+            if any(start < t.end and t.start < end for t in a.spans):
+                continue
+            sp.start, sp.end = start, end
+            a.spans.append(sp)
+    a.spans.sort(key=lambda sp: sp.start)
+    return a
+
+
 _BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
@@ -258,7 +280,7 @@ def _run(matter, scope, private, out_dir, log_path, profile_name, config) -> Run
         fr.name_analyses = [_analyze_name(engine, part) for part in fr.name_parts]
         try:
             fr.extracted = extract(p)
-            fr.analysis = engine.analyze(fr.extracted.text)
+            fr.analysis = _analyze_text(engine, fr.extracted.text)
         except SafeError as exc:
             fr.error = str(exc)
             log.warning("file failed: %s: %s", rel, exc)
@@ -347,7 +369,8 @@ def _run(matter, scope, private, out_dir, log_path, profile_name, config) -> Run
         keep_count=len(keep_terms),
         totals={
             "files": summary["files"]["processed"], "skipped": summary["files"]["skipped"],
-            "failed": summary["files"]["failed"], "redactions": summary["redactions"]["total"],
+            "failed": summary["files"]["failed"], "attachments_failed": summary["files"]["attachments_failed"],
+            "redactions": summary["redactions"]["total"],
             "distinct": summary["redactions"]["distinct_values"], "misses": summary["possible_misses"],
             "blocked": len(blocked),
         },
@@ -405,6 +428,11 @@ def _summary(profile, results: list[FileResult], skipped, registry: Registry, bl
             "by_type": dict(sorted(by_type.items())),
             "skipped": len(skipped),
             "failed": len(results) - len(ok),
+            # Files attached to a PDF (read, or failed) and attachments not opened by design
+            # (an unsupported type, or attached to an email).
+            "attachments_read": sum(fr.extracted.attachments for fr in ok),
+            "attachments_failed": sum(fr.extracted.attachments_failed for fr in ok),
+            "attachments_not_processed": sum(fr.extracted.attachments_skipped for fr in ok),
         },
         "pages": {
             "pdf_pages": sum(fr.extracted.pages for fr in ok if fr.extracted.kind == "pdf"),

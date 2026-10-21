@@ -2,7 +2,9 @@
 
 - PDF: PyMuPDF text layer. A page with (almost) no text is rendered and OCR'd.
   Large images on a text page are OCR'd too, so text inside an embedded
-  screenshot isn't lost.
+  screenshot isn't lost. Files attached to the PDF are read as well: a PDF
+  Portfolio is just a cover page plus these, and a page can carry a paperclip
+  attachment.
 - PNG/JPG/WEBP/BMP/TIFF/GIF: RapidOCR (ONNX models bundled in the package).
 - TXT/MD: read as text. EML: headers and body; attachments are named, not opened.
 - DOCX: paragraphs, tables, headers and footers (python-docx, if installed).
@@ -17,6 +19,8 @@ from redact_local import netguard
 netguard.install()
 
 import email  # noqa: E402
+import io  # noqa: E402
+import logging  # noqa: E402
 import re  # noqa: E402
 from dataclasses import dataclass, field  # noqa: E402
 from email import policy  # noqa: E402
@@ -34,6 +38,11 @@ MIN_TEXT_CHARS = 25        # fewer characters than this on a PDF page -> OCR it
 PAGE_DPI = 300
 REGION_DPI = 200
 REGION_MIN_SHARE = 0.10    # OCR embedded images covering >= 10% of a text page
+MAX_ATTACHMENT_DEPTH = 3   # a portfolio inside a portfolio inside a portfolio
+MAX_ATTACHMENTS = 1000     # per file on disk, all levels: nested copies can multiply from a few KB
+SNIFF_MAX_BYTES = 64 * 2**20   # an attached file with no usable extension is only unpacked to check its type below this
+
+log = logging.getLogger("redact_local.extract")  # the pipeline sends this to the private run.log
 
 
 @dataclass
@@ -45,8 +54,15 @@ class Extracted:
     ocr_pages: int = 0
     ocr_regions: int = 0
     images_ocr: int = 0
-    attachments_skipped: int = 0
+    attachments: int = 0           # files attached to a PDF that were read
+    attachments_skipped: int = 0   # not opened: an unsupported type, or an email's attachment
+    attachments_failed: int = 0    # attached to a PDF but couldn't be read: the run is partial
     notes: list[str] = field(default_factory=list)  # private: shown in review.html only
+
+
+def _read(src: Path | bytes) -> bytes:
+    """A file on disk, or the bytes of a file embedded in a PDF."""
+    return src.read_bytes() if isinstance(src, Path) else src
 
 
 # ── OCR ────────────────────────────────────────────────────────────────────
@@ -110,11 +126,11 @@ def _pixmap_to_rgb(pix):
 
 # ── per type ───────────────────────────────────────────────────────────────
 
-def _image(path: Path) -> Extracted:
+def _image(src: Path | bytes) -> Extracted:
     from PIL import Image, ImageSequence, UnidentifiedImageError
 
     try:
-        img = Image.open(path)
+        img = Image.open(io.BytesIO(_read(src)))
     except (UnidentifiedImageError, OSError):
         raise SafeError("An image file could not be opened.") from None
     parts = []
@@ -131,11 +147,13 @@ def _image(path: Path) -> Extracted:
     return ex
 
 
-def _pdf(path: Path) -> Extracted:
+def _pdf(src: Path | bytes, depth: int = 0, budget: list[int] | None = None) -> Extracted:
+    """``budget`` holds how many more attached files may be read, shared by every level."""
     import pymupdf
 
+    budget = [MAX_ATTACHMENTS] if budget is None else budget
     try:
-        doc = pymupdf.open(path)
+        doc = pymupdf.open(src) if isinstance(src, Path) else pymupdf.open(stream=src, filetype="pdf")
     except Exception:
         raise SafeError("A PDF could not be opened.") from None
     # Expand ligatures ("ﬃ" -> "ffi") so names typeset with them still match.
@@ -170,8 +188,125 @@ def _pdf(path: Path) -> Extracted:
                 found = ocr_array(_pixmap_to_rgb(page.get_pixmap(dpi=PAGE_DPI, alpha=False)))
                 chunk.append("[OCR]\n" + found if found.strip() else "[OCR found no text on this page]")
             parts.append("\n".join(chunk))
+        try:
+            attached = _attached_files(doc)
+        except Exception:
+            log.exception("could not list a PDF's attached files")
+            attached = []
+            ex.attachments_failed += 1
+            ex.notes.append("The PDF's attached files could not be listed (details in run.log).")
+        for n, (names, xref) in enumerate(attached, 1):
+            parts.append(_pdf_attachment(doc, n, names, xref, ex, depth, budget))
         ex.text = "\n\n".join(parts)
         return ex
+
+
+def _attached_files(doc) -> list[tuple[list[str], int]]:
+    """Each file attached to a PDF, once: (the names it's filed under, the xref of its data).
+
+    Covers the EmbeddedFiles name tree (a portfolio's documents) and paperclip
+    annotations on pages. MuPDF's own tree loader is used because PyMuPDF's
+    embfile_* calls miss a tree split into /Kids, and rescan the tree on every call.
+    """
+    from pymupdf import mupdf
+
+    if not doc.is_pdf:  # MuPDF opens an image or HTML file named .pdf as what it really is
+        return []
+    pdf = doc.this if isinstance(doc.this, mupdf.PdfDocument) else mupdf.PdfDocument(doc.this)
+    name = mupdf.pdf_new_name
+    tree = mupdf.pdf_load_name_tree(pdf, name("EmbeddedFiles"))
+    specs = []
+    for i in range(mupdf.pdf_dict_len(tree)):
+        key = mupdf.pdf_dict_get_key(tree, i)
+        specs.append((mupdf.pdf_to_name(key) or mupdf.pdf_to_text_string(key), mupdf.pdf_dict_get_val(tree, i)))
+    for p in range(mupdf.pdf_count_pages(pdf)):
+        annots = mupdf.pdf_dict_get(mupdf.pdf_lookup_page_obj(pdf, p), name("Annots"))
+        for j in range(mupdf.pdf_array_len(annots)):
+            annot = mupdf.pdf_array_get(annots, j)
+            if mupdf.pdf_name_eq(mupdf.pdf_dict_get(annot, name("Subtype")), name("FileAttachment")):
+                specs.append(("", mupdf.pdf_dict_get(annot, name("FS"))))
+    files, seen = [], set()
+    for key, fs in specs:
+        ef = mupdf.pdf_dict_get(fs, name("EF"))
+        stream = mupdf.pdf_dict_get(ef, name("F"))
+        if not mupdf.pdf_is_stream(stream):
+            stream = mupdf.pdf_dict_get(ef, name("UF"))
+        xref = mupdf.pdf_to_num(stream) if mupdf.pdf_is_stream(stream) else 0
+        if xref in seen:  # one file listed twice (or a tree that repeats itself) is read once
+            continue
+        if xref:
+            seen.add(xref)
+        files.append(([mupdf.pdf_dict_get_text_string(fs, name(k)) for k in ("UF", "F")] + [key], xref))
+    return files
+
+
+_MAGIC = [(b"\x89PNG", ".png"), (b"\xff\xd8\xff", ".jpg"), (b"GIF8", ".gif"), (b"II*\x00", ".tif"), (b"MM\x00*", ".tif")]
+
+
+def _sniff(data: bytes) -> str:
+    """A supported extension for an attached file whose names don't give one, or ""."""
+    if b"%PDF-" in data[:1024]:  # readers allow junk before the header
+        return ".pdf"
+    return next((ext for magic, ext in _MAGIC if data.startswith(magic)), "")
+
+
+def _pdf_attachment(doc, n: int, names: list[str], xref: int, ex: Extracted, depth: int, budget: list[int]) -> str:
+    """Read one file attached to a PDF and fold its counts into ``ex``.
+
+    The attached file's names never reach the output: they may contain a name, and
+    only an extension is needed. A file that can't be read is counted as failed
+    rather than failing the whole PDF. Notes (private: review sheet only) name the
+    file and say why.
+    """
+    head = f"--- attached file {n} ---"
+    label = f"Attached file {n}" + next((f" ({nm})" for nm in names if nm), "")
+
+    def skip(why: str, failed: bool = True) -> str:
+        if failed:
+            ex.attachments_failed += 1
+        else:
+            ex.attachments_skipped += 1
+        ex.notes.append(f"{label} not processed: {why}")
+        return head + "\n[not processed]"
+
+    if not xref:
+        return skip("it's a link to a file outside the PDF.", failed=False)
+    if depth >= MAX_ATTACHMENT_DEPTH:
+        return skip("nested too deep.")
+    if budget[0] <= 0:
+        return skip(f"more than {MAX_ATTACHMENTS} attached files in one document.")
+    budget[0] -= 1
+    try:
+        ext = next((s for s in (Path(nm).suffix.lower() for nm in names if nm) if s in SUPPORTED), "")
+        if not ext:
+            kind, size = doc.xref_get_key(xref, "Params/Size")
+            if kind == "int" and int(size) > SNIFF_MAX_BYTES:
+                return skip("unsupported type.", failed=False)
+        data = doc.xref_stream(xref) or b""
+        ext = ext or _sniff(data)
+        if not ext:
+            return skip("unsupported type.", failed=False)
+        sub = _extract(data, ext, depth + 1, budget)
+    except SafeError as e:
+        return skip(str(e))
+    except Exception:  # details (which may quote the file) go to the private run.log only
+        log.exception("attached file %d could not be read", n)
+        return skip("it could not be read (details in run.log).")
+    ex.attachments += 1 + sub.attachments
+    ex.attachments_skipped += sub.attachments_skipped
+    ex.attachments_failed += sub.attachments_failed
+    ex.ocr_regions += sub.ocr_regions
+    text = sub.text
+    if sub.kind == "image":
+        # OCR'd like an image on a page: it isn't an image file in the matter.
+        ex.ocr_regions += 1
+        text = "[OCR]\n" + text if text.strip() else "[OCR found no text]"
+    elif sub.kind == "pdf":
+        ex.pages += sub.pages
+        ex.text_pages += sub.text_pages
+        ex.ocr_pages += sub.ocr_pages
+    ex.notes.extend(f"{label}: {note}" for note in sub.notes)
+    return f"{head}\n{text}"
 
 
 _BOMS = [
@@ -241,8 +376,13 @@ def html_to_text(html: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
-def _eml(path: Path) -> Extracted:
-    msg = email.message_from_bytes(path.read_bytes(), policy=policy.default)
+# The line _eml writes for each attachment. The pipeline analyzes the name in it the
+# way it analyzes a file name, so "RobertFakename2024.docx" doesn't pass as one token.
+ATTACHMENT_NAME_LINE = re.compile(r"^\[attachment not processed: (.+)\]$", re.M)
+
+
+def _eml(src: Path | bytes) -> Extracted:
+    msg = email.message_from_bytes(_read(src), policy=policy.default)
     lines = []
     for h in ("From", "To", "Cc", "Bcc", "Reply-To", "Date", "Subject"):
         if msg[h]:
@@ -258,7 +398,8 @@ def _eml(path: Path) -> Extracted:
     ex = Extracted(text="", kind="email")
     for part in msg.iter_attachments():
         ex.attachments_skipped += 1
-        lines_name = part.get_filename() or "(unnamed)"
+        # Underscores become spaces, as in file names, and the name stays on one line.
+        lines_name = " ".join(re.sub(r"_+", " ", part.get_filename() or "").split()) or "(unnamed)"
         text += f"\n[attachment not processed: {lines_name}]"
     ex.text = "\n".join(lines) + "\n\n" + text.strip()
     if ex.attachments_skipped:
@@ -266,13 +407,13 @@ def _eml(path: Path) -> Extracted:
     return ex
 
 
-def _docx(path: Path) -> Extracted:
+def _docx(src: Path | bytes) -> Extracted:
     try:
         import docx
     except ImportError:
         raise SafeError("python-docx is not installed; DOCX files are skipped.") from None
     try:
-        d = docx.Document(str(path))
+        d = docx.Document(io.BytesIO(_read(src)))
     except Exception:
         raise SafeError("A DOCX file could not be opened.") from None
     parts = []
@@ -293,22 +434,22 @@ def _docx(path: Path) -> Extracted:
     return ex
 
 
-def _extract(path: Path) -> Extracted:
-    ext = path.suffix.lower()
+def _extract(src: Path | bytes, ext: str, depth: int = 0, budget: list[int] | None = None) -> Extracted:
+    """``src`` is a file on disk or the bytes of a file attached to a PDF; ``ext`` picks the reader."""
     if ext == ".pdf":
-        return _pdf(path)
+        return _pdf(src, depth, budget)
     if ext in IMAGE_EXT:
-        return _image(path)
+        return _image(src)
     if ext in TEXT_EXT:
-        return Extracted(text=_decode(path.read_bytes()), kind="text")
+        return Extracted(text=_decode(_read(src)), kind="text")
     if ext == ".eml":
-        return _eml(path)
+        return _eml(src)
     if ext == ".docx":
-        return _docx(path)
+        return _docx(src)
     raise SafeError("Unsupported file type.")
 
 
 def extract(path: Path) -> Extracted:
-    ex = _extract(path)
+    ex = _extract(path, path.suffix.lower())
     ex.text = normalize_text(ex.text)
     return ex
