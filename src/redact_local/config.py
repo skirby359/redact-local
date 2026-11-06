@@ -15,7 +15,7 @@ DEFAULT_CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 
 ALL_CATEGORIES = {
     "PERSON", "EMAIL", "PHONE", "HANDLE", "SSN", "DRIVER-LICENSE", "CARD",
-    "IBAN", "IP", "ADDRESS", "DOB", "TICKET", "LOCATION", "ORG", "DATE", "NRP",
+    "IBAN", "IP", "ADDRESS", "DOB", "TICKET", "VIN", "LOCATION", "ORG", "DATE", "NRP",
 }
 NAME_VARIANTS = {"full", "last-first", "initial-last", "first", "last"}
 
@@ -33,6 +33,7 @@ class Profile:
     protect_case_numbers: bool
     keep_titled_officials: bool
     official_titles: list[str] = field(default_factory=list)
+    redact_possessive_names: bool = False
 
 
 def config_dir(override: str | os.PathLike | None = None) -> Path:
@@ -88,6 +89,7 @@ def load_profile(name: str, cfg: Path) -> Profile:
         protect_case_numbers=bool(merged.get("protect_case_numbers", False)),
         keep_titled_officials=bool(merged.get("keep_titled_officials", False)),
         official_titles=[str(t) for t in merged.get("official_titles", [])],
+        redact_possessive_names=bool(merged.get("redact_possessive_names", False)),
     )
 
 

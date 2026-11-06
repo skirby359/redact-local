@@ -78,10 +78,10 @@ def matter(tmp_path: Path) -> Path:
     return m
 
 
-def run(m: Path, profile: str = "client", target: Path | None = None):
+def run(m: Path, profile: str = "client", target: Path | None = None, **kw):
     from redact_local import pipeline
 
-    return pipeline.run(target or m, profile, CONFIG)
+    return pipeline.run(target or m, profile, CONFIG, **kw)
 
 
 def out_dir(m: Path) -> Path:

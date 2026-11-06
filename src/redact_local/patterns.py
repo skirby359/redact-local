@@ -63,12 +63,17 @@ _SUFFIXES = [
     "Highway", "Hwy", "Circle", "Cir", "Loop", "Trail", "Trl", "Square", "Sq", "Alley",
     "Plaza", "Plz", "Crescent", "Point", "Pt", "Row", "Walk", "Crossing", "Path", "Pike",
 ]
+_SUFFIX_ALTS = "|".join(sorted(_SUFFIXES, key=len, reverse=True))
 _SUFFIX = "(?:" + "|".join(sorted({*_SUFFIXES, *(s.upper() for s in _SUFFIXES)}, key=len, reverse=True)) + r")\b\.?"
+# Handwritten and OCR'd forms write "1234 N Example lane": any case, but only after a
+# capitalized street name, so "a 4 way stop" isn't an address.
+_SUFFIX_ANY_CASE = rf"(?i:{_SUFFIX_ALTS})\b\.?"
 _DIR = r"(?:N|S|E|W|NE|NW|SE|SW|North|South|East|West|Northeast|Northwest|Southeast|Southwest|NORTH|SOUTH|EAST|WEST)\.?"
 _UNIT = r"(?:,?\s*(?:Apt|Apartment|Suite|Ste|Unit|Rm|Room|Bldg|Building|Fl|Floor|APT|SUITE|STE|UNIT|#)\.?\s*#?\s*[A-Za-z0-9-]{1,6}\b)"
+_STREET_WORD = r"[A-Z0-9][A-Za-z0-9.'-]*\s+"
 ADDRESS_RE = re.compile(
     rf"(?<![\w.#-])\d{{1,6}}(?:-\d{{1,4}})?[A-Z]?\s+(?:{_DIR}\s+)?"
-    rf"(?:[A-Z0-9][A-Za-z0-9.'-]*\s+){{0,4}}?{_SUFFIX}"
+    rf"(?:(?:{_STREET_WORD}){{0,4}}?{_SUFFIX}|(?:{_STREET_WORD}){{1,4}}?{_SUFFIX_ANY_CASE})"
     rf"(?:\s+{_DIR}(?![A-Za-z]))?{_UNIT}?"
 )
 PO_BOX_RE = re.compile(r"(?i)\bP\.?\s?O\.?\s?Box\s+\d+\b")
@@ -161,7 +166,56 @@ def driver_licenses(text: str) -> Iterator[tuple[int, int, str, str]]:
         yield m.start(), m.end(), "DRIVER-LICENSE", "regex:wa-driver-license"
 
 
-ALL = (handles, addresses, dates_of_birth, tickets, emails, phones, driver_licenses)
+# ── Vehicle identification numbers ─────────────────────────────────────────
+
+# 17 characters, no I, O or Q. Position 9 is a check digit on North American VINs; a
+# VIN that fails it is still taken when "VIN" is written just before it.
+VIN_RE = re.compile(r"(?<![A-Za-z0-9])(?=[A-HJ-NPR-Z0-9]*\d)(?=[A-HJ-NPR-Z0-9]*[A-HJ-NPR-Z])[A-HJ-NPR-Z0-9]{17}(?![A-Za-z0-9])")
+_VIN_LABEL = re.compile(r"(?i)\bV\.?I\.?N\.?\s*(?:no\.?|number|#)?\s*[:#]?\s*$")
+_VIN_VALUES = {**{str(d): d for d in range(10)},
+               **dict(zip("ABCDEFGH", range(1, 9))), **dict(zip("JKLMN", range(1, 6))), "P": 7, "R": 9,
+               **dict(zip("STUVWXYZ", range(2, 10)))}
+_VIN_WEIGHTS = (8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2)
+
+
+def vin_check_digit_ok(vin: str) -> bool:
+    total = sum(_VIN_VALUES[c] * w for c, w in zip(vin.upper(), _VIN_WEIGHTS))
+    expected = total % 11
+    return vin[8].upper() == ("X" if expected == 10 else str(expected))
+
+
+def vins(text: str) -> Iterator[tuple[int, int, str, str]]:
+    for m in VIN_RE.finditer(text):
+        if vin_check_digit_ok(m.group(0)) or _VIN_LABEL.search(text[max(0, m.start() - 20):m.start()]):
+            yield m.start(), m.end(), "VIN", "regex:vin"
+
+
+ALL = (handles, addresses, dates_of_birth, tickets, emails, phones, driver_licenses, vins)
+
+
+# ── Form fields on OCR'd paper forms ───────────────────────────────────────
+
+# "NAME  Jane Exampel" on a sales slip: the model can't read a misspelled name, but the
+# label says what it is. Taken when the label has a colon, or is in capitals inside
+# OCR'd text (forms print labels in capitals; OCR drops the colon).
+FORM_LABEL_RE = re.compile(
+    r"(?m)^[ \t]*(?P<label>(?i:customer[ \t]*name|customer|name|street[ \t]*address|address|street))"
+    r"(?P<sep>[ \t]*:|[ \t]+)[ \t]*(?P<rest>[^\n]*[^\s])"
+)
+
+
+def form_fields(text: str, ocr: list[tuple[int, int]]) -> Iterator[tuple[int, int, str, str]]:
+    for m in FORM_LABEL_RE.finditer(text):
+        label = m.group("label")
+        in_ocr = any(a <= m.start() < b for a, b in ocr)
+        if ":" not in m.group("sep") and not (label.isupper() and in_ocr):
+            continue
+        rest = m.group("rest")
+        if not re.search(r"[^\W\d_]{2}", rest) or re.fullmatch(r"\[[^\]]*\]", rest.strip()):
+            continue
+        low = label.lower()
+        category = "ADDRESS" if ("address" in low or low.startswith("street")) else "PERSON"
+        yield m.start("rest"), m.end("rest"), category, f"form label ({' '.join(label.split())})"
 
 
 # ── Leftover long numbers (for "possible misses", not redacted) ────────────

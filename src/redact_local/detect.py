@@ -65,6 +65,38 @@ _NER_MAPPING = {
     "GPE": "LOCATION", "ORG": "ORGANIZATION", "DATE": "DATE_TIME", "TIME": "DATE_TIME",
 }
 _CHUNK = 100_000
+# "Jane's", "Mary-Kate's": a capitalized word with a possessive 's.
+_POSSESSIVE = re.compile(r"(?<![^\W\d_])([A-Z][^\W\d_]+(?:-[A-Z][^\W\d_]+)?)['’]s(?![^\W\d_])")
+_IRREGULAR_PLURALS = {"children": "child", "women": "woman", "men": "man", "people": "person"}
+_OCR_MARK = re.compile(r"^\[OCR\]\n", re.M)
+_WORD = re.compile(r"[^\W\d_]+")
+_CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])")
+
+
+def ocr_ranges(text: str) -> list[tuple[int, int]]:
+    """Where the OCR'd text is: from each "[OCR]" line to the next page break or the end."""
+    out = []
+    for m in _OCR_MARK.finditer(text):
+        nxt = text.find("\n--- page ", m.end())
+        out.append((m.end(), len(text) if nxt < 0 else nxt))
+    return out
+
+
+def _edit_distance(a: str, b: str, limit: int) -> int:
+    """Levenshtein distance with adjacent transpositions, stopping early past ``limit``."""
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    prev2, prev = None, list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb))
+            if prev2 is not None and i > 1 and j > 1 and ca == b[j - 2] and a[i - 2] == cb:
+                cur[j] = min(cur[j], prev2[j - 2] + 1)
+        if min(cur) > limit:
+            return limit + 1
+        prev2, prev = prev, cur
+    return prev[-1]
 _WSBA = r"WSBA\s*(?:No\.?|#|Number)?\s*:?\s*\d{3,6}\b"
 _WSBA_AFTER = re.compile(rf"[ \t]*,?[ \t]*(?:\(\s*)?{_WSBA}")
 _WSBA_NEXT_LINE = re.compile(rf"[^\n]{{0,40}}\n[ \t]*{_WSBA}")
@@ -116,7 +148,7 @@ def ident_for(category: str, value: str) -> str:
         return f"{category}|{digits}"
     if category == "HANDLE":
         return f"HANDLE|{v.lstrip('@＠').casefold()}"
-    if category in {"EMAIL", "IBAN", "IP", "TICKET", "DRIVER-LICENSE"}:
+    if category in {"EMAIL", "IBAN", "IP", "TICKET", "DRIVER-LICENSE", "VIN"}:
         return category + "|" + re.sub(r"\s+", "", v).casefold()
     # Names and free text: ignore case, punctuation and spacing.
     return category + "|" + " ".join(re.findall(r"[^\W_]+", v.casefold()))
@@ -255,6 +287,16 @@ class Engine:
         self.matchers = names.build_matchers(
             names_file, profile.name_variants, self.on_keep_list, self.english | common_words
         )
+        # Name words from names.txt (4+ letters) to look for misspelled in OCR'd text.
+        self._fuzzy: list[tuple[str, names.NameEntry]] = []
+        for entry in names_file.entries:
+            for alias in entry.aliases:
+                if alias.kind != "name":
+                    continue
+                for tok in names._name_tokens(alias.text):
+                    t = tok.strip(".").lower()
+                    if len(t) >= 4 and t.isalpha():
+                        self._fuzzy.append((t, entry))
         self._titles = sorted(profile.official_titles, key=len, reverse=True)
         self._title_re = (
             re.compile(r"(?:" + "|".join(re.escape(t) for t in self._titles) + r")\s*$", re.I)
@@ -267,7 +309,8 @@ class Engine:
         """True if ``value`` is exactly a keep-list term (ignoring case unless the term is all caps)."""
         return normalize_term(value) in self._keep_ci or " ".join(value.replace(".", "").split()) in self._keep_cs
 
-    def analyze(self, text: str) -> Analysis:
+    def analyze(self, text: str, is_name: bool = False) -> Analysis:
+        """``is_name``: the text is a file or folder name, not a sentence."""
         result = Analysis(text=text)
         candidates: list[Span] = []
         docs = []
@@ -325,6 +368,17 @@ class Engine:
             for start, end, cat, name in detector(text):
                 candidates.append(Span(start, end, cat, name, ident_for(cat, text[start:end]), priority=P_STRUCT))
 
+        if self.profile.redact_possessive_names:
+            candidates.extend(self._possessive_names(text, candidates, is_name))
+
+        # OCR'd text: labelled form fields, and names.txt names the OCR misspelled.
+        ocr = ocr_ranges(text)
+        for start, end, cat, name in patterns.form_fields(text, ocr):
+            prio = P_PERSON if cat == "PERSON" else P_STRUCT
+            candidates.append(Span(start, end, cat, name, ident_for(cat, text[start:end]), priority=prio))
+        if ocr and self._fuzzy:
+            candidates.extend(self._ocr_misspellings(text, ocr))
+
         self._filter(text, candidates, result)
         self._misses(text, docs, result)
         for s in result.spans:
@@ -332,6 +386,104 @@ class Engine:
         return result
 
     # ── internals ──
+
+    def _ordinary(self, word: str) -> bool:
+        low = word.lower()
+        forms = {low, _IRREGULAR_PLURALS.get(low, low)}
+        if low.endswith("s"):
+            forms.add(low[:-1])
+        return any(f in self.english or f in self.common for f in forms)
+
+    def _ocr_misspellings(self, text: str, ocr: list[tuple[int, int]]) -> list[Span]:
+        """names.txt names as OCR misreads them: "Qventin", "Exampel", "QuentinExample", "Exam ple".
+
+        Only inside OCR'd text. Words are also split where OCR ran them together
+        ("toJaneExampel" -> "Jane", "Exampel"), and two pieces split by one space are
+        tried joined. What counts as a match is ``_ocr_name_match``. Keep-list terms
+        never match. A match takes the person's placeholder.
+        """
+        out = []
+        for start, end in ocr:
+            pieces, cands = [], []
+            for m in _WORD.finditer(text, start, end):
+                word, off, prev = m.group(0), m.start(), 0
+                cuts = [c.start() for c in _CAMEL.finditer(word)]
+                if cuts:
+                    cands.append((off, off + len(word), word, False))   # the whole run too: "GrAnt"
+                for cut in cuts + [len(word)]:
+                    if cut > prev:
+                        pieces.append((off + prev, off + cut, word[prev:cut], bool(cuts)))
+                    prev = cut
+            cands += pieces
+            pairs = [(a1, b2, w1 + w2) for (a1, b1, w1, _), (a2, b2, w2, _) in zip(pieces, pieces[1:])
+                     if text[b1:a2] == " "]
+            for a, b, w, glued in cands:
+                entry = self._ocr_name_match(w, glued)
+                if entry is not None:
+                    fixed = entry.placeholder_base
+                    ident = f"NAMES|{fixed}" if fixed else ident_for("PERSON", entry.canonical)
+                    out.append(Span(a, b, "NAME" if fixed else "PERSON", "names.txt (OCR misspelling)", ident,
+                                    fixed=fixed, primary=entry.canonical, priority=P_NAMES, kind="name"))
+            # One name split by a space ("Exam ple"): the joined pieces, edit distance only.
+            for a, b, w in pairs:
+                entry = self._ocr_name_match(w, False, whole_word_only=True)
+                if entry is not None:
+                    fixed = entry.placeholder_base
+                    ident = f"NAMES|{fixed}" if fixed else ident_for("PERSON", entry.canonical)
+                    out.append(Span(a, b, "NAME" if fixed else "PERSON", "names.txt (OCR misspelling)", ident,
+                                    fixed=fixed, primary=entry.canonical, priority=P_NAMES, kind="name"))
+        return out
+
+    def _ocr_name_match(self, w: str, glued: bool, whole_word_only: bool = False):
+        """The names.txt entry an OCR'd word is a misreading of, or None.
+
+        - A word that isn't an ordinary word: one edit from a name word (two for 7+
+          letters; 5 letters or fewer must keep the first letter), or starting with one
+          when the OCR ran it into more letters ("Grntstilowed").
+        - An ordinary word ("grant", "bill", "will") only when it is exactly the name and
+          the OCR shows it: run into the next word ("grantPed") or oddly capitalized ("GrAnt").
+          A plain "bill" on an invoice stays.
+        """
+        low = w.lower()
+        if len(low) < 3 or self.on_keep_list(w):
+            return None
+        ordinary = self._ordinary(low)
+        odd_case = not (w.islower() or w.isupper() or w.istitle())
+        for tok, entry in self._fuzzy:
+            if low == tok:
+                if not ordinary or glued or odd_case:
+                    return entry
+                continue
+            if ordinary or (len(tok) <= 5 and low[0] != tok[0]):
+                continue
+            limit = 2 if len(tok) >= 7 else 1
+            if _edit_distance(low, tok, limit) <= limit:
+                return entry
+            if not whole_word_only and len(low) > len(tok) + 1 and low[0] == tok[0]:
+                if any(_edit_distance(low[:n], tok, 1) <= 1 for n in (len(tok) - 1, len(tok), len(tok) + 1)):
+                    return entry
+        return None
+
+    def _possessive_names(self, text: str, candidates: list[Span], is_name: bool) -> list[Span]:
+        """The person in "Quentin's Truck Repair", which the model keeps as an organization.
+
+        In text, only inside an ORG or LOCATION detection: the model already judged the rest.
+        In a file or folder name, any capitalized possessive, since there's no sentence to go on.
+        Ordinary words ("Driver's", "Children's") and keep-list terms are left alone; the
+        filter that follows applies the keep list and citations as for any other name.
+        """
+        ranges = [(0, len(text))] if is_name else [
+            (c.start, c.end) for c in candidates if c.category in {"ORG", "LOCATION"}]
+        out, seen = [], set()
+        for start, end in ranges:
+            for m in _POSSESSIVE.finditer(text, start, min(len(text), end + 2)):  # the 's may sit past the span
+                a, b = m.span(1)
+                word = m.group(1)
+                if a < start or (a, b) in seen or self._ordinary(word) or self.on_keep_list(word):
+                    continue
+                seen.add((a, b))
+                out.append(Span(a, b, "PERSON", "possessive in a name", ident_for("PERSON", word), priority=P_PERSON))
+        return out
 
     def _protected_spans(self, text: str) -> list[tuple[int, int, str]]:
         name_spans, number_spans = citations.citation_spans(text)
@@ -401,11 +553,19 @@ class Engine:
                 continue
             if s.category != "PERSON":
                 continue  # structured values are all-or-nothing
-            # A person name partly covered by something stronger: keep the rest.
+            # A person name partly covered by something stronger: redact the rest, unless
+            # the rest is a keep-list term ("Qty Description" swept in after a name), the
+            # same rule a whole detection gets above.
             for a, b in _subtract((s.start, s.end), clashes):
                 a, b = _trim(text, a, b)
                 if b - a >= 2 and re.search(r"[^\W\d_]{2}", text[a:b]):
-                    final.append(Span(a, b, s.category, s.detector, ident_for("PERSON", text[a:b]), priority=s.priority))
+                    piece = text[a:b]
+                    hit = _inside(a, b, keep_hits)
+                    if hit or self.on_keep_list(piece):
+                        result.kept.append(Kept(a, b, piece, s.category,
+                                                f"keep list: {hit[2]}" if hit else "keep list", s.detector))
+                        continue
+                    final.append(Span(a, b, s.category, s.detector, ident_for("PERSON", piece), priority=s.priority))
                     claimed.append((a, b))
         final.sort(key=lambda s: s.start)
         result.spans = final

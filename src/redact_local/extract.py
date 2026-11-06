@@ -141,7 +141,10 @@ def _image(src: Path | bytes) -> Extracted:
             if frames > 50:
                 break
             parts.append(ocr_array(_pil_to_rgb(frame)))
-    ex = Extracted(text="\n\n".join(p for p in parts if p), kind="image", pages=frames, ocr_pages=frames, images_ocr=1)
+    text = "\n\n".join(p for p in parts if p)
+    # Marked like an OCR'd PDF page, so the OCR-only rules (form labels, misspelled names) apply.
+    ex = Extracted(text="[OCR]\n" + text if text.strip() else "", kind="image", pages=frames, ocr_pages=frames,
+                   images_ocr=1)
     if not ex.text.strip():
         ex.notes.append("OCR found no text.")
     return ex

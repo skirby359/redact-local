@@ -1,6 +1,7 @@
 """Command line for redact-local.
 
-    redact-local run <path> [--profile client|court-records]
+    redact-local run <path> [--profile client|court-records] [--suggest-names]
+    redact-local roles <folder> PERSON-4=OWNER PERSON-9=KEEP ...
     redact-local restore <draft> --matter <folder>
     redact-local profiles
 
@@ -83,7 +84,7 @@ def cmd_run(args) -> int:
     log_path = private / "run.log"
     with _quiet(log_path):
         try:
-            result = pipeline.run(args.path, args.profile, args.config)
+            result = pipeline.run(args.path, args.profile, args.config, suggest_names=args.suggest_names)
         except SafeError:
             raise
         except BaseException:
@@ -111,9 +112,23 @@ def cmd_run(args) -> int:
     print(f"Kept: {k['keep_list_occurrences']} keep-list occurrence(s), {k['kept_by_rule']} by rule, "
           f"{k['protected_citations']} protected citation span(s)")
     print(f"Possible misses to check: {s['possible_misses']}")
+    names_txt = result.private / "names.txt"
+    found = _plural(result.names_suggested, "person", "people")
+    uncomment = "  Uncomment the real ones (a role after => is optional), delete the rest, then rerun."
     if result.names_created:
-        print(f"names.txt: none yet, so a template was created at {result.private / 'names.txt'}")
-        print("  Add the people to remove, then rerun.")
+        print(f"names.txt: none yet, so one was created at {names_txt}")
+        if result.names_suggested:
+            print(f"  It lists {found} the scan found, commented out.")
+            print(uncomment)
+        else:
+            print("  Add the people to remove, then rerun.")
+    elif result.names_suggested:
+        print(f"names.txt: added {found} the scan found, commented out, to {names_txt}")
+        print(uncomment)
+    elif args.suggest_names and not result.names_suggest_failed:
+        print("names.txt: no new people to suggest.")
+    if result.names_suggest_failed:
+        print("names.txt: suggestions could not be added (details in the private run.log).")
     if f["attachments_not_processed"]:
         print(f"Attachments not opened: {f['attachments_not_processed']} (unsupported type, or attached to an email; "
               "see the Files table in the review sheet)")
@@ -159,6 +174,45 @@ def cmd_restore(args) -> int:
     return EXIT_OK
 
 
+def cmd_roles(args) -> int:
+    from redact_local import names, pipeline
+    from redact_local.errors import UsageError
+    from redact_local.placeholders import Registry
+
+    matter, _scope = pipeline.matter_paths(args.matter)
+    private = matter / pipeline.PRIVATE
+    names_path = private / "names.txt"
+    if not names_path.is_file():
+        raise UsageError("This matter has no names.txt yet. Run it first.")
+    assignments = []
+    for item in args.assignments:
+        if "=" not in item:
+            raise UsageError("Give each role as PLACEHOLDER=ROLE, e.g. PERSON-4=OWNER or PERSON-9=KEEP.")
+        ph, role = item.split("=", 1)
+        assignments.append((ph, role))
+    from redact_local.detect import ident_for
+
+    reg = Registry(private / "key.csv")
+    spellings = {ph: [v for v in [reg.primary.get(ph), *values] if v] for ph, values in reg.rows.items()}
+    # Which placeholder each active line produces now (a line's "# [PERSON-n]" note can be stale).
+    current = {}
+    for e in names.parse(names_path).entries:
+        ph = e.placeholder_base or reg.by_ident.get(ident_for("PERSON", e.canonical))
+        if ph:
+            current[e.line_no] = ph
+    result = names.set_roles(names_path, assignments, spellings, current)
+
+    print(f"names.txt: {_plural(result.roles, 'role')} set, {result.kept} marked KEEP (not a person), "
+          f"{result.plain} made active without a role"
+          + (f"; {_plural(result.merged, 'line')} merged into another (same person)" if result.merged else "")
+          + (f"; {_plural(result.added, 'person', 'people')} added from the key" if result.added else ""))
+    print(f"  Backup of the previous names.txt: {names_path.with_suffix('.txt.bak')}")
+    print(f"  Changed line(s): {', '.join(map(str, result.lines)) or 'none'}")
+    print(f"  File: {names_path}")
+    print(f'Rerun to apply: redact-local run "{matter}"')
+    return EXIT_OK
+
+
 def cmd_profiles(args) -> int:
     from redact_local.config import config_dir, list_profiles
 
@@ -176,12 +230,22 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("path", help="Matter folder, or a single file inside one.")
     r.add_argument("--profile", default="client", help="Profile from config/profiles.toml (default: client).")
     r.add_argument("--config", default=None, help="Config folder (default: the repo's config/).")
+    r.add_argument("--suggest-names", action="store_true",
+                   help="Add people this run found to names.txt, commented out, if they aren't on it yet "
+                        "(done anyway while names.txt is still the blank template).")
     r.set_defaults(func=cmd_run)
 
     s = sub.add_parser("restore", help="Swap placeholders in a draft back to the real values.")
     s.add_argument("draft", help="Draft written with placeholders (.txt, .md or .docx).")
     s.add_argument("--matter", required=True, help="The matter folder the placeholders came from.")
     s.set_defaults(func=cmd_restore)
+
+    ro = sub.add_parser(
+        "roles", help="Set roles in names.txt by placeholder (PERSON-4=OWNER), or mark one not a person (PERSON-9=KEEP).")
+    ro.add_argument("matter", help="The matter folder.")
+    ro.add_argument("assignments", nargs="+", metavar="PLACEHOLDER=ROLE",
+                    help="e.g. PERSON-4=OWNER, PERSON-9=KEEP (not a person: leave it in), PERSON-5= (active, no role).")
+    ro.set_defaults(func=cmd_roles)
 
     pr = sub.add_parser("profiles", help="List the available profiles.")
     pr.add_argument("--config", default=None)

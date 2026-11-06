@@ -41,6 +41,8 @@ The CLI runs from its own venv, with `-I` so nothing in the current folder is im
 ```
 "{{PYTHON}}" -I -m redact_local run "<folder or file>"
 "{{PYTHON}}" -I -m redact_local run "<folder>" --profile court-records
+"{{PYTHON}}" -I -m redact_local run "<folder>" --suggest-names
+"{{PYTHON}}" -I -m redact_local roles "<folder>" PERSON-4=OWNER PERSON-2=SHOP PERSON-9=KEEP
 "{{PYTHON}}" -I -m redact_local restore "<draft.md|.txt|.docx>" --matter "<folder>"
 "{{PYTHON}}" -I -m redact_local profiles
 ```
@@ -61,10 +63,19 @@ IDs). Choosing the looser profile is the user's call. Ask; don't pick it yoursel
 
 ## Workflow
 
-1. **Before the first run**, ask the user to write `<folder>\_redact\names.txt` (if the
-   run finds none it creates a template and says so). One person per line:
-   `Jane Example | @jexample | jane@example.com => CLIENT`. Roles are optional.
-2. **Run** the CLI. Relay the counts and the two paths it prints.
+1. **Run** the CLI on the matter folder. Relay the counts and the paths it prints. The user
+   doesn't need to write `names.txt` first: if there isn't one, the run creates
+   `<folder>\_redact\names.txt` listing the people it found, **commented out**, and
+   prints how many. While `names.txt` is still the untouched blank template (a matter
+   started before this feature), a run fills in the suggestions the same way.
+   `--suggest-names` adds people found later to a `names.txt` the user has already
+   edited (only ones not on it yet; the user's lines are never changed).
+2. **The user edits `names.txt`**: deletes the `# ` in front of each real person, adds a
+   role after `=>` if they want one (`Jane Example => CLIENT`, so the output says
+   `[CLIENT]` instead of `[PERSON-3]`), and leaves the rest commented out. A suggestion
+   that isn't a person (a part name, a line of work notes) gets `=> KEEP`: the next run
+   leaves it in the output. One person per line:
+   `Jane Example | @jexample | jane@example.com => CLIENT`.
 3. **The user opens `review.html`** and fixes the lists:
    - something real left in → add it to `_redact\names.txt`
    - something harmless redacted → add it to `{{CONFIG_DIR}}/keep.txt`
@@ -72,6 +83,18 @@ IDs). Choosing the looser profile is the user's call. Ask; don't pick it yoursel
    - a "possible miss" that's just a word → `{{CONFIG_DIR}}/common-words.txt`
 4. **Rerun** until the user is satisfied. Placeholders stay stable across reruns.
 5. **The user tells you it's reviewed.** Then read `<folder> - redacted\`.
+   - **Roles from context, without seeing names:** if people are still `[PERSON-n]`,
+     propose roles from what the redacted text shows (`PERSON-4 → OWNER: signs the
+     repair order as customer`). The user checks each against `review.html`. On their OK,
+     run `roles` with the mapping, then rerun, then reread. One person under several
+     placeholders (several `names.txt` lines): join them with `+`
+     (`PERSON-1+PERSON-3+PERSON-5=MECHANIC`) and `roles` merges their lines into one.
+     `roles` finds each line by the placeholder it produces now (then its note, then the
+     key), changes all or nothing, keeps a `names.txt.bak`, and prints counts and line
+     numbers only.
+   - Something redacted that plainly isn't a person (a part name, `[PERSON-7] 6 hrs`):
+     propose `PERSON-7=KEEP` the same way. It will appear in the output after the rerun,
+     so the user decides.
 6. **Draft** with placeholders. Save the draft outside the input folder.
 7. **Restore**: run `restore`, relay the counts and output path, and tell the user the
    restored file is theirs to open.

@@ -124,9 +124,18 @@ def write(path: Path, *, matter: Path, out_dir: Path, profile, files: list, skip
         file_rows.append([_e(f.source), _e(f.output or "(none)"), detail,
                           str(len(f.analysis.spans)) if f.analysis else "-"])
 
+    suggested = names_info.get("suggested", 0)
+    found = f"{suggested} {'person' if suggested == 1 else 'people'} the scan found"
+    if names_info.get("created"):
+        created = (f" (just created, listing {found}, commented out; uncomment the real ones and rerun)"
+                   if suggested else " (template just created; fill it in and rerun)")
+    elif suggested:
+        created = f" ({found} added, commented out; uncomment the real ones and rerun)"
+    else:
+        created = ""
     names_line = (
         f"names.txt: {names_info['entries']} entr{'y' if names_info['entries'] == 1 else 'ies'}"
-        + (" (template just created; fill it in and rerun)" if names_info.get("created") else "")
+        + created
         + (f", {names_info['bad_lines']} line(s) not understood" if names_info.get("bad_lines") else "")
     )
     n = totals.get("attachments_failed")
@@ -147,6 +156,11 @@ Don't share it, and don't let Claude open it.</p>
 
 <div class=how><b>How to fix things, then rerun:</b>
 <ol>
+<li><b>Confirm the suggested people</b>: <code>_redact\\names.txt</code> lists the people the scan found,
+commented out (<code># Jane Example =&gt;</code>). Delete the <code>#</code> in front of each real person,
+type a role after <code>=&gt;</code> if you want one (<code>Jane Example =&gt; CLIENT</code>), and leave
+or delete the rest. Not a person (a part name, a line of work notes)? Make it
+<code>Dexron VI =&gt; KEEP</code> and the next run leaves it in.</li>
 <li><b>Something real was left in</b> (see "Possible misses" and the output files): add the person, handle
 or email to <code>_redact\\names.txt</code>, e.g. <code>Jane Example | @jexample =&gt; CLIENT</code>.</li>
 <li><b>Something harmless was redacted</b> (a product, a court, a staff role): add it to

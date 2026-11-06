@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from conftest import CLIENT, CONFIG, LETTER, assert_no_secrets, cli, make_portfolio, out_dir, render_png
+from conftest import CLIENT, CONFIG, LETTER, OTHER, assert_no_secrets, cli, make_portfolio, out_dir, outputs, render_png
 
 
 def _populate(matter, tmp_path):
@@ -58,6 +58,46 @@ def test_unreadable_attachment_makes_the_run_partial(matter, tmp_path):
     assert_no_secrets(console)
     assert proc.returncode == 4, console
     assert "1 file attached to a PDF could not be read" in proc.stdout
+
+
+def test_suggested_names_are_reported_as_a_count_only(tmp_path):
+    m = tmp_path / "Matter 005"
+    m.mkdir()
+    (m / "letter.txt").write_text(LETTER + "\nZorbleflax was cc'd.\n", encoding="utf-8")
+    proc = cli("run", str(m), "--config", str(CONFIG), cwd=tmp_path)
+    console = proc.stdout + proc.stderr
+    assert proc.returncode == 0, console
+    assert_no_secrets(console)
+    assert "the scan found, commented out." in proc.stdout
+    names_txt = (m / "_redact" / "names.txt").read_text(encoding="utf-8")
+    assert "# Robert Fakename =>" in names_txt
+
+    proc = cli("run", str(m), "--config", str(CONFIG), "--suggest-names", cwd=tmp_path)
+    console = proc.stdout + proc.stderr
+    assert proc.returncode == 0, console
+    assert_no_secrets(console)
+    assert "names.txt: no new people to suggest." in proc.stdout
+
+
+def test_roles_command_prints_counts_only_and_the_rerun_uses_the_role(tmp_path):
+    m = tmp_path / "Matter 007"
+    m.mkdir()
+    (m / "letter.txt").write_text(f"I spoke with {OTHER} yesterday about the appeal.", encoding="utf-8")
+    assert cli("run", str(m), "--config", str(CONFIG), cwd=tmp_path).returncode == 0
+
+    proc = cli("roles", str(m), "PERSON-1=WITNESS", cwd=tmp_path)
+    console = proc.stdout + proc.stderr
+    assert proc.returncode == 0, console
+    assert_no_secrets(console)
+    assert "1 role set" in proc.stdout
+
+    proc = cli("roles", str(m), "PERSON-7=OWNER", cwd=tmp_path)
+    assert proc.returncode == 2 and "PERSON-7" in proc.stderr
+    assert_no_secrets(proc.stdout + proc.stderr)
+
+    assert cli("run", str(m), "--config", str(CONFIG), cwd=tmp_path).returncode == 0
+    text = next(iter(outputs(m).values()))
+    assert "[WITNESS]" in text and "Fakename" not in text
 
 
 def test_errors_are_safe(matter, tmp_path):

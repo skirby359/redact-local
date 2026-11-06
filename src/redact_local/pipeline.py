@@ -30,7 +30,7 @@ from datetime import datetime, timezone  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from redact_local import __version__, names, review  # noqa: E402
-from redact_local.config import config_dir, load_common_words, load_keep_terms, load_profile  # noqa: E402
+from redact_local.config import config_dir, load_common_words, load_keep_terms, load_profile, normalize_term  # noqa: E402
 from redact_local.errors import SafeError  # noqa: E402
 from redact_local.placeholders import Registry  # noqa: E402
 from redact_local.textnorm import normalize_text  # noqa: E402
@@ -67,6 +67,8 @@ class RunResult:
     summary: dict
     names_created: bool
     blocked: list[dict]
+    names_suggested: int = 0          # people added to names.txt, commented out
+    names_suggest_failed: bool = False
 
 
 def matter_paths(path: str | os.PathLike) -> tuple[Path, Path | None]:
@@ -128,7 +130,7 @@ def _analyze_name(engine, part: str):
     Spans found only in the split form are mapped back onto the original, so a
     name that is itself camelCase ("McDonald") still matches as written.
     """
-    a = engine.analyze(part)
+    a = engine.analyze(part, is_name=True)
     cuts = [m.start() for m in _NAME_BREAK.finditer(part)]
     if not cuts:
         return a
@@ -140,7 +142,7 @@ def _analyze_name(engine, part: str):
             pieces.append(" ")
             back.append(cut)
         prev = cut
-    split = engine.analyze("".join(pieces))
+    split = engine.analyze("".join(pieces), is_name=True)
     for sp in split.spans:
         start, end = back[sp.start], back[sp.end - 1] + 1
         if any(start < t.end and t.start < end for t in a.spans):
@@ -220,6 +222,34 @@ def _link_people(registry: Registry, spans) -> None:
                 registry.link(ident, next(iter(matches)))
 
 
+def _suggest_people(results: list[FileResult]) -> list[names.Suggestion]:
+    """One suggestion per person the model found (not names.txt), after placeholders are set.
+
+    Mentions that share a placeholder are one person ("Quentin" linked to "Quentin
+    Fakerton"); the suggestion uses the fullest, most frequent spelling.
+    """
+    groups: dict[str, tuple[Counter, set, list]] = {}
+    for fr in results:
+        for a in [*fr.name_analyses, *([fr.analysis] if fr.analysis else [])]:
+            for s in a.spans:
+                if s.category != "PERSON" or s.detector.startswith("names.txt") or not s.placeholder:
+                    continue
+                value = names.clean_suggestion(a.text[s.start:s.end])
+                forms, files, count = groups.setdefault(s.placeholder, (Counter(), set(), [0]))
+                count[0] += 1
+                files.add(fr.source)
+                if value:
+                    forms[value] += 1
+    out = []
+    for placeholder, (forms, files, count) in groups.items():
+        if not forms:
+            continue
+        best = max(forms, key=lambda v: (len(v.split()) >= 2, forms[v], len(v)))
+        out.append(names.Suggestion(best, placeholder, count[0], len(files)))
+    out.sort(key=lambda s: (-s.mentions, s.name.casefold()))
+    return out
+
+
 def _open_log(private: Path) -> tuple[Path, logging.Handler]:
     path = private / "run.log"
     handler = logging.FileHandler(path, encoding="utf-8")
@@ -231,20 +261,25 @@ def _open_log(private: Path) -> tuple[Path, logging.Handler]:
     return path, handler
 
 
-def run(path: str | os.PathLike, profile_name: str = "client", config: str | os.PathLike | None = None) -> RunResult:
+def run(
+    path: str | os.PathLike, profile_name: str = "client", config: str | os.PathLike | None = None,
+    suggest_names: bool = False,
+) -> RunResult:
+    """Redact a matter. People the scan finds are added to names.txt, commented out,
+    while names.txt is still the blank template, or always with ``suggest_names``."""
     matter, scope = matter_paths(path)
     private = matter / PRIVATE
     private.mkdir(exist_ok=True)
     out_dir = matter.parent / f"{matter.name}{OUT_SUFFIX}"
     log_path, handler = _open_log(private)
     try:
-        return _run(matter, scope, private, out_dir, log_path, profile_name, config)
+        return _run(matter, scope, private, out_dir, log_path, profile_name, config, suggest_names)
     finally:
         logging.getLogger("redact_local").removeHandler(handler)
         handler.close()
 
 
-def _run(matter, scope, private, out_dir, log_path, profile_name, config) -> RunResult:
+def _run(matter, scope, private, out_dir, log_path, profile_name, config, suggest_names=False) -> RunResult:
     from redact_local.detect import Engine
     from redact_local.extract import extract
 
@@ -256,9 +291,17 @@ def _run(matter, scope, private, out_dir, log_path, profile_name, config) -> Run
     names_created = not names_path.exists()
     if names_created:
         names.write_template(names_path)
+    # Only touch names.txt unasked while nobody has edited it.
+    suggest = suggest_names or names.is_untouched_template(names_path)
     registry = Registry(private / "key.csv")
     names_file = names.parse(names_path, existing=registry.primary)
     keep_terms = load_keep_terms(profile, cfg, private)
+    # names.txt lines marked "=> KEEP" (not a person) join this matter's keep list.
+    seen = {normalize_term(t) for t in keep_terms}
+    for term in names_file.keep:
+        if normalize_term(term) not in seen:
+            seen.add(normalize_term(term))
+            keep_terms.append(term)
     engine = Engine(profile, keep_terms, load_common_words(cfg), names_file)
 
     scope_rel = scope.relative_to(matter) if scope is not None else None
@@ -296,6 +339,16 @@ def _run(matter, scope, private, out_dir, log_path, profile_name, config) -> Run
         for a in [*fr.name_analyses, *([fr.analysis] if fr.analysis else [])]:
             for s in a.spans:
                 s.placeholder = registry.assign(s.ident, s.category, a.text[s.start:s.end], fixed=s.fixed, primary=s.primary)
+
+    # People the model found, written into names.txt commented out for the user to confirm.
+    # names.txt was parsed above, so this doesn't change what this run redacts.
+    suggested, suggest_failed = 0, False
+    if suggest:
+        try:
+            suggested = names.append_suggestions(names_path, _suggest_people(results), profile.name)
+        except (OSError, UnicodeDecodeError):
+            suggest_failed = True
+            log.exception("could not add suggestions to names.txt")
 
     # Pass 3: write outputs. key.csv and the manifest are saved even if this
     # pass fails partway, so restore works and the next run can clean up.
@@ -358,6 +411,7 @@ def _run(matter, scope, private, out_dir, log_path, profile_name, config) -> Run
         log.error("network attempt blocked: module=%s via=%s call=%s target=%s", a["module"], a["via"], a["call"], a["target"])
     summary = _summary(profile, results, skipped, registry, blocked)
     summary["stale_outputs_not_removed"] = stale_left
+    summary["names_txt"] = {"entries": len(names_file.entries), "suggestions_added": suggested}
     summary_path = out_dir / "_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
@@ -365,7 +419,8 @@ def _run(matter, scope, private, out_dir, log_path, profile_name, config) -> Run
     review.write(
         review_path, matter=matter, out_dir=out_dir, profile=profile, files=results,
         skipped=[str(p.relative_to(matter)) for p in skipped],
-        names_info={"entries": len(names_file.entries), "created": names_created, "bad_lines": names_file.bad_lines},
+        names_info={"entries": len(names_file.entries), "created": names_created, "bad_lines": names_file.bad_lines,
+                    "suggested": suggested},
         keep_count=len(keep_terms),
         totals={
             "files": summary["files"]["processed"], "skipped": summary["files"]["skipped"],
@@ -381,6 +436,7 @@ def _run(matter, scope, private, out_dir, log_path, profile_name, config) -> Run
         log_path=log_path, profile=profile.name, model=profile.spacy_model, summary=summary,
         names_created=names_created,
         blocked=[{"module": a["module"], "call": a["call"]} for a in blocked],
+        names_suggested=suggested, names_suggest_failed=suggest_failed,
     )
 
 

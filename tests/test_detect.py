@@ -100,6 +100,124 @@ def test_client_profile_redacts_names_in_citations_but_keeps_the_cite(matter):
     assert "Ambrose Fictitious" not in out
 
 
+def _engine(profile="client"):
+    from conftest import CONFIG
+
+    from redact_local import names
+    from redact_local.config import load_common_words, load_keep_terms, load_profile
+    from redact_local.detect import Engine
+
+    prof = load_profile(profile, CONFIG)
+    return Engine(prof, load_keep_terms(prof, CONFIG, None), load_common_words(CONFIG), names.NamesFile())
+
+
+def _redacted(engine, text, is_name=False):
+    return {text[s.start:s.end] for s in engine.analyze(text, is_name=is_name).spans}
+
+
+def test_person_in_a_possessive_business_name_is_redacted():
+    # The model calls "Quentin's Truck Repair" an organization, which the profile keeps.
+    engine = _engine()
+    assert "Quentin" in _redacted(engine, "Quentin's Truck Repair agreement with Robert Fakename", is_name=True)
+    assert "Quentin" in _redacted(engine, "Quentin's truck invoice", is_name=True)
+    assert "Quentin" in _redacted(engine, "We signed an agreement with Quentin's Truck Repair for the transmission work.")
+    # Ordinary words in possessives are not people.
+    for name in ("Driver's License Office", "Children's Hospital records", "Owner's Manual"):
+        assert not _redacted(engine, name, is_name=True), name
+
+
+def test_possessive_names_are_off_in_court_records():
+    engine = _engine("court-records")
+    assert "Quentin" not in _redacted(engine, "We signed an agreement with Quentin's Truck Repair for the transmission work.")
+
+
+def test_possessive_business_name_in_a_file_name_is_redacted_in_the_output_name(tmp_path):
+    m = tmp_path / "Matter 008"
+    (m / "Quentin's truck invoice").mkdir(parents=True)
+    (m / "Quentin's truck invoice" / "Quentin's Truck Repair agreement.txt").write_text(
+        "Labor: transmission rebuild, 6 hrs.", encoding="utf-8")
+    run(m)
+    names_out = list(outputs(m))
+    assert len(names_out) == 1 and "Quentin" not in names_out[0] and "[PERSON-" in names_out[0]
+
+
+def test_lowercase_street_type_after_a_street_name_is_an_address():
+    text = "Address: 1234 N Fakewood lane, Fakeville. Turn at the 4 way stop. 12 main st."
+    found = {text[a:b] for a, b, *_ in patterns.addresses(text)}
+    assert "1234 N Fakewood lane" in found
+    assert not any("way" in f or "main" in f for f in found)
+
+
+def test_vin_is_redacted(matter):
+    assert patterns.vin_check_digit_ok("1M8GDM9AXKP042788")
+    assert not patterns.vin_check_digit_ok("1M8GDM9A1KP042788")
+    text = ("Vehicle: 2007 Fakeville truck, VIN 1M8GDM9A1KP042788 (check digit off, but labelled). "
+            "Also 1M8GDM9AXKP042788. Not a VIN: 11111111111111111 or print_1785945532620.")
+    found = [text[a:b] for a, b, *_ in patterns.vins(text)]
+    assert found == ["1M8GDM9A1KP042788", "1M8GDM9AXKP042788"]
+    out, _ = _letter_output(matter, text=text)
+    assert "[VIN-1]" in out and "[VIN-2]" in out and "1M8GDM9" not in out
+
+
+def _engine_with_names(tmp_path, body):
+    from conftest import CONFIG
+
+    from redact_local import names
+    from redact_local.config import load_common_words, load_keep_terms, load_profile
+    from redact_local.detect import Engine
+
+    p = tmp_path / "names.txt"
+    p.write_text(body, encoding="utf-8")
+    prof = load_profile("client", CONFIG)
+    return Engine(prof, load_keep_terms(prof, CONFIG, None), load_common_words(CONFIG), names.parse(p))
+
+
+def test_ocr_glued_misspelled_and_labelled_names(tmp_path):
+    engine = _engine_with_names(tmp_path, "Quentin Fakerton => CLIENT\n")
+    text = ("--- page 1 ---\n[OCR]\n"
+            "ToQuentinFakerton<qf@example.com>\n"
+            "NAME Zorbleflax Wibbleton\n"
+            "ADDRESS 99 Fakewood Lane\n"
+            "Labor on Qventin trans. Parts for Quentn, Fakert on paid. Make sure.\n"
+            "--- page 2 ---\n"
+            "Typed page: Qventin is a misspelling here too, but this page isn't OCR.\n")
+    a = engine.analyze(text)
+    redacted = {text[s.start:s.end]: s for s in a.spans}
+    for v in ("QuentinFakerton", "Qventin", "Quentn", "Fakert on", "Zorbleflax Wibbleton", "99 Fakewood Lane"):
+        assert v in redacted, v
+    assert redacted["Qventin"].fixed == "CLIENT"                 # the person's own placeholder
+    assert redacted["Zorbleflax Wibbleton"].category == "PERSON"
+    assert redacted["99 Fakewood Lane"].category == "ADDRESS"
+    page2 = text.index("--- page 2 ---")
+    assert not any(s.start > page2 for s in a.spans)            # typed text: no fuzzy matching
+    assert "Make" not in redacted                                # an ordinary word is never a misspelling
+
+
+def test_ocr_name_that_is_also_an_ordinary_word(tmp_path):
+    # "Grant" is an English word; OCR context is what makes it a name.
+    engine = _engine_with_names(tmp_path, "Grant Fakerton\n")
+    text = ("[OCR]\nNAME GrAnt Fakerton\nLabor on grantPed. Grnt paid. Grntstilowed 750\n"
+            "We grant the motion.\n")
+    spans = engine.analyze(text).spans
+    redacted = {text[s.start:s.end] for s in spans}
+    for v in ("Grnt", "Grntstilowed"):
+        assert v in redacted, v
+    assert any("grant" in r for r in redacted)                 # inside "grantPed"
+    assert any("GrAnt" in r for r in redacted)
+    assert "paid" not in " ".join(redacted)
+    we = text.index("We grant")
+    assert not any(s.start >= we for s in spans)               # "we grant the motion" stays
+
+
+def test_image_ocr_is_marked_as_ocr(tmp_path):
+    from conftest import render_png
+
+    from redact_local.extract import extract
+
+    ex = extract(render_png(tmp_path / "slip.png", ["NAME Quentin Fakerton"]))
+    assert ex.text.startswith("[OCR]\n")
+
+
 def test_unknown_capitalized_word_is_redacted_or_listed_as_a_miss(matter):
     text = "Yesterday Xylophrax Quabbentine phoned. The account id is 99817264 and it was Blorptastic."
     out, result = _letter_output(matter, text=text)

@@ -58,17 +58,20 @@ from the current folder.
 ## The workflow
 
 ```
-write names.txt → run → check review.html → fix the lists → rerun
-               → Claude reads the "- redacted" folder → Claude drafts with placeholders → restore
+run → confirm the suggested names.txt → check review.html → fix the lists → rerun
+    → Claude reads the "- redacted" folder → Claude drafts with placeholders → restore
 ```
 
-1. **Write `<matter>\_redact\names.txt`** with the people you want removed (format below).
-   If you skip this, the first run creates a template and tells you.
-2. **Run** (or ask Claude to, via the skill):
+1. **Run** (or ask Claude to, via the skill):
    ```
    redact-local run "C:\path\to\matter"
    ```
-   It prints counts and two paths, nothing else.
+   It prints counts and paths, nothing else. If the matter has no `names.txt` yet, the
+   run creates `<matter>\_redact\names.txt` listing the people it found, commented out
+   (see [Suggested names](#suggested-names)). You can also write `names.txt` yourself
+   before the first run (format below).
+2. **Confirm the suggestions in `names.txt`**: uncomment the real people, give them roles
+   if you like (`=> CLIENT`), and leave the rest commented out.
 3. **Open `<matter>\_redact\review.html` yourself.** It lists every redacted value,
    everything kept and why, and "possible misses".
 4. **Fix the lists**: misses go in `names.txt`; false positives go in `config\keep.txt`
@@ -92,7 +95,7 @@ For a matter folder `X`:
 | Path | What | Who reads it |
 |---|---|---|
 | `X\` | your originals (never modified) | you |
-| `X\_redact\names.txt` | people to remove (you write it) | you |
+| `X\_redact\names.txt` | people to remove (the first run suggests, you confirm or write it) | you |
 | `X\_redact\keep.txt` | optional per-matter keep list | you |
 | `X\_redact\key.csv` | placeholder → original value (persistent) | you, and `restore` |
 | `X\_redact\review.html` | the review sheet (contains originals) | you |
@@ -145,6 +148,53 @@ Lee Witness
   wins over names.txt: `State v. Example, 123 Wn.2d 456` stays as written because
   published case names are public record. The prose mentions are still redacted.
 - `restore` puts back the first alias on the line.
+- A line starting with `#` is a comment, and so is anything after ` #` on a line
+  (`Jane Example => CLIENT   # met 3/2`).
+
+### Suggested names
+
+While `names.txt` is new, or still the untouched blank template, a run adds the people
+the model found to it, **commented out**, under a "Suggested by redact-local" header:
+
+```
+# Jane Example =>                         # [PERSON-1], 7 mentions in 3 files
+# Pat Staffer =>                          # [PERSON-2], 2 mentions in 1 file
+```
+
+Nothing changes until you delete the `# ` at the start of a line. Then the person is a
+names.txt entry like any other: add a role after `=>` (`Jane Example => CLIENT`) or leave
+it empty to keep the `[PERSON-n]` shown, and all their variants (`Jane`, `Example, Jane`,
+`J. Example`...) are matched on the next run. Mentions that already share a placeholder
+(`Jane` linked to `Jane Example`) are one suggestion, spelled the fullest way the scan
+saw. A suggestion that isn't a person (a business or place the model mistook) can stay
+commented out; to stop it being redacted, add it to the keep list.
+
+Once you've edited `names.txt`, runs leave it alone. `run --suggest-names` adds people
+found since (a new document, say) who aren't on any line yet, commented out, below
+your own lines, which it never changes. The CLI prints only how many it added.
+
+**Not a person?** The model sometimes calls a part name (`Dexron VI`) or a line of work
+notes (`Trans 6 hrs`) a person. Mark the suggestion `Dexron VI => KEEP`: the next run
+adds it to this matter's keep list, so it stays in the output, and it isn't suggested
+again. (Leaving it commented out keeps it redacted.)
+
+### Setting roles by placeholder
+
+```
+redact-local roles "C:\path\to\matter" PERSON-4=OWNER PERSON-2=SHOP PERSON-9=KEEP PERSON-5=
+```
+
+Sets roles in `names.txt` without anyone typing a name, which is what lets Claude
+propose roles from the redacted text (`[PERSON-4]` signs the repair order as the
+customer, so OWNER) while the names stay on your machine. Each placeholder is found by
+the active line that produces it now, then by a commented line's suggestion note, then
+by any spelling `key.csv` has for it; someone in the key but on no line is added. One
+person spread over several lines (and so several placeholders) is merged into one line
+with `+`: `PERSON-2+PERSON-22+PERSON-27=OWNER` keeps every spelling as an alias, puts the
+plainest full name first (what `restore` puts back) and drops form labels swept into a
+name ("... Address"). The previous file is kept as `names.txt.bak`. `=KEEP` marks it not a person; an empty role (`PERSON-5=`) makes the
+line active without one. All or nothing: if a placeholder can't be found, or a role isn't
+valid, nothing is written. It prints counts and line numbers. Rerun to apply.
 
 ## What gets detected
 
@@ -159,6 +209,23 @@ Lee Witness
 | ADDRESS | custom regex for US street addresses and PO boxes (Presidio has none). City and state stay. |
 | DOB | custom: a date next to "DOB", "date of birth", "born"... |
 | TICKET | custom: numbers after ticket / case / account / order / reference..., and `#1234567` |
+| VIN | custom: 17-character vehicle identification numbers that pass the check digit, or follow "VIN" |
+
+**OCR'd text** (photos, scanned pages) gets three more rules, because handwriting and
+photographed forms defeat exact matching:
+
+- A form field with a label in capitals ("NAME", "CUSTOMER", "ADDRESS", "STREET") has the
+  rest of its line redacted, as a person or an address. Anywhere, a label with a colon
+  ("Name: ...", "Address: ...") does the same.
+- A `names.txt` name the OCR misspelled is matched: one edit away (two for names of 7+
+  letters; names of 5 letters or fewer must keep their first letter), including words the
+  OCR ran together ("QuentinExampel") or split ("Exam ple"). Ordinary English words never
+  match, so "Grand" is never a misreading of "Grant".
+- Anywhere, a multi-word `names.txt` name run into the next word ("ToJaneExample") is
+  matched at the lowercase-to-capital break.
+
+Street addresses also match with a lowercase street type ("1234 N Example lane") after a
+capitalized street name.
 
 **Kept by default:** organizations, city/state-level places, ordinary dates, legal
 citations (reporter and statute parts always: `123 Wn.2d 456`, `RCW 9A.04.110`, WAC,
@@ -167,6 +234,19 @@ adapted from [wa-cite-check](https://github.com/skirby359/wa-cite-check).
 
 Kept orgs and places still appear under "Possible misses" when they aren't on a keep
 list, because a person mislabeled as a place is the classic miss.
+
+**A person inside a business name** (`client` profile, `redact_possessive_names`): the
+model calls "Jane's Truck Repair" an organization, so it would be kept whole. The
+possessive name in a kept org or place is redacted: `[PERSON-1]'s Truck Repair`. In file
+and folder names, which have no sentence around them, any capitalized possessive counts
+(`Jane's truck invoice`). Ordinary words (`Driver's`, `Children's`, `Owner's`) and
+keep-list terms are left alone. A business named after someone without a possessive
+("Example Auto") is still kept: add the person to `names.txt`.
+
+**Metadata is never read.** Only text goes to the output: PDF page text and OCR, image
+OCR, DOCX body, tables, headers and footers, and email headers and body. PDF document
+properties (author, title), image EXIF (camera, GPS) and DOCX core properties (author,
+last modified by) are not extracted, so they never reach the output folder.
 
 ## Profiles
 

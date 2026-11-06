@@ -28,11 +28,13 @@ score_threshold = 0.4
 #   ADDRESS         street addresses and PO boxes (city and state are kept)
 #   DOB             dates next to "DOB", "date of birth", "born"
 #   TICKET          ticket, case, account, order... numbers, and #1234567
+#   VIN             vehicle identification numbers (linkable to the registered owner;
+#                   restore puts them back in anything you file)
 # Also available, off by default: LOCATION, ORG, DATE, NRP.
 redact = [
   "PERSON", "EMAIL", "PHONE", "HANDLE",
   "SSN", "DRIVER-LICENSE", "CARD", "IBAN", "IP",
-  "ADDRESS", "DOB", "TICKET",
+  "ADDRESS", "DOB", "TICKET", "VIN",
 ]
 
 # Keep lists to load, from this config folder. <matter>\_redact\keep.txt is
@@ -48,6 +50,12 @@ keep_files = ["keep.txt"]
 # A one-word variant that is also an ordinary word ("Will", "Grant") only
 # matches when capitalized. One that is on a keep list is skipped.
 name_variants = ["full", "last-first", "initial-last", "first", "last"]
+
+# Redact the person in a possessive inside a business or place name, which is
+# otherwise kept: "Jane's Truck Repair" -> "[PERSON-1]'s Truck Repair". In file
+# and folder names (no sentence for the model to go on) any capitalized
+# possessive counts. Ordinary words ("Driver's", "Children's") are left alone.
+redact_possessive_names = false
 
 # Leave the case name inside a legal citation alone ("State v. Example,
 # 123 Wn.2d 456"). The reporter/statute part of a citation is always kept.
@@ -67,6 +75,7 @@ official_titles = [
 
 [profiles.client]
 description = "Strict default. Every person not on a keep list is redacted, including names inside citations."
+redact_possessive_names = true
 
 
 [profiles.court-records]

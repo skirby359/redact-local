@@ -14,6 +14,13 @@ Format, one person per line:
 - Without a role, the person gets the next ``[PERSON-n]``.
 - Matching ignores case. Name variants (``Example, Jane``, ``J. Example``,
   ``Jane`` on its own...) are generated as the profile's ``name_variants`` says.
+- A line starting with ``#`` is a comment, and so is anything after `` #`` on a line.
+- ``=> KEEP`` means "not a person" (``Dexron VI => KEEP``): the value joins the
+  matter's keep list for the run instead of being redacted.
+
+The first run also lists the people the scan found, commented out
+(``# Jane Example =>    # [PERSON-1], 3 mentions in 2 files``), so the user
+uncomments the real ones instead of typing the list from scratch.
 """
 
 from __future__ import annotations
@@ -21,10 +28,11 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 from redact_local.config import normalize_term
-from redact_local.errors import SafeError
+from redact_local.errors import SafeError, UsageError
 from redact_local.textnorm import normalize_entry
 
 TEMPLATE = """\
@@ -42,6 +50,10 @@ TEMPLATE = """\
 # Matching ignores case. "Example, Jane", "J. Example", "Jane" and "Example"
 # are matched automatically (see name_variants in config/profiles.toml).
 """
+
+# "Jane Example => CLIENT   # a note": the note is a comment. Needs whitespace before
+# the #, so a # inside a value isn't cut.
+_INLINE_COMMENT = re.compile(r"\s#.*$")
 
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
 _HANDLE = re.compile(r"^[@＠][A-Za-z0-9][\w.-]*$")
@@ -89,11 +101,16 @@ class NameEntry:
         return names[0] if names else self.aliases[0].text
 
 
+KEEP_ROLE = "KEEP"
+
+
 @dataclass
 class NamesFile:
     entries: list[NameEntry] = field(default_factory=list)
     bad_lines: int = 0
     exists: bool = False
+    # "Dexron VI => KEEP": not a person. Added to this run's keep list, so it stays in the output.
+    keep: list[str] = field(default_factory=list)
 
 
 def _classify(alias: str) -> Alias:
@@ -119,6 +136,9 @@ def parse(path: Path, existing: dict[str, str] | None = None) -> NamesFile:
         line = normalize_entry(line).strip()
         if not line or line.startswith("#"):
             continue
+        line = _INLINE_COMMENT.sub("", line).strip()
+        if not line:
+            continue
         role = None
         if "=>" in line:
             line, role_raw = line.rsplit("=>", 1)
@@ -126,6 +146,9 @@ def parse(path: Path, existing: dict[str, str] | None = None) -> NamesFile:
         aliases = [_classify(a) for a in line.split("|") if a.strip()]
         if not aliases:
             nf.bad_lines += 1
+            continue
+        if role == KEEP_ROLE:
+            nf.keep.extend(a.text.strip() for a in aliases)
             continue
         nf.entries.append(NameEntry(no, aliases, role))
     assign_placeholders(nf, existing or {})
@@ -171,6 +194,330 @@ def assign_placeholders(nf: NamesFile, existing: dict[str, str]) -> None:
 def write_template(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(TEMPLATE, encoding="utf-8")
+
+
+def is_untouched_template(path: Path) -> bool:
+    """True if names.txt is still exactly the template (nobody has edited it)."""
+    try:
+        return path.read_text(encoding="utf-8-sig") == TEMPLATE
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+# ── Suggestions: people the scan found, written in commented out ───────────
+
+SUGGEST_HEADER = "# ── Suggested by redact-local "
+_SUGGEST_COLUMN = 40
+_SUGGEST_HELP = [
+    "# lines is used yet: each one starts with \"# \".",
+    "#",
+    "#  - A real person: delete the \"# \" at the start of the line. To give them a",
+    "#    role, type it after the =>, e.g.   Jane Example => CLIENT",
+    "#  - The same person spelled several ways: put every spelling on ONE line,",
+    "#    separated by |, e.g.   Jane Example | J. Q. Exampel => CLIENT",
+    "#    (Separate lines become separate placeholders. redact-local roles can merge",
+    "#    them: PERSON-1+PERSON-3=CLIENT.)",
+    "#  - Not a person (a part name, a line of work notes, a business, a place):",
+    "#    delete the \"# \" and type KEEP after the =>, e.g.   Dexron VI => KEEP",
+    "#    The next run leaves it in the output and stops suggesting it.",
+    "#    Or leave it commented out: it stays redacted.",
+    "#",
+    "# The [PERSON-n] note is the placeholder it had in review.html when suggested.",
+    "#",
+]
+# Instruction lines from earlier versions, still in names.txt files they wrote.
+_LEGACY_HELP = [
+    "#    Without a role they keep the [PERSON-n] shown.",
+    "#  - The same person on two lines: keep one, and put the other spelling after",
+    "#    a |, e.g.   Jane Example | J. Q. Example => CLIENT",
+    "# The [PERSON-n] note is the placeholder it has in review.html today.",
+    "#  - Not a person (a business, a place, an OCR misread): leave it commented",
+    "#    out or delete it. To stop it being redacted, add it to _redact\\keep.txt.",
+]
+# Our own instruction lines, whose example names must not count as "already listed".
+_BOILERPLATE = {line.rstrip() for line in [*TEMPLATE.splitlines(), *_SUGGEST_HELP, *_LEGACY_HELP]}
+
+
+@dataclass
+class Suggestion:
+    name: str          # the fullest form the scan saw, e.g. "Jane Example"
+    placeholder: str   # what it is in review.html today, without brackets
+    mentions: int
+    files: int
+
+
+def _person_key(text: str) -> str:
+    """Compare names ignoring case, punctuation and "Last, First" order."""
+    tokens = _name_tokens(text)
+    return " ".join(re.findall(r"[^\W_]+", " ".join(tokens).casefold()))
+
+
+def known_aliases(path: Path) -> set[str]:
+    """Every name on every line of names.txt, active or commented out, as a comparison key."""
+    if not path.is_file():
+        return set()
+    out: set[str] = set()
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        if line.rstrip() in _BOILERPLATE:
+            continue
+        line = _INLINE_COMMENT.sub("", normalize_entry(line).strip().lstrip("#").strip())
+        if "=>" in line:
+            line = line.rsplit("=>", 1)[0]
+        out.update(k for k in (_person_key(a) for a in line.split("|")) if k)
+    return out
+
+
+def clean_suggestion(value: str) -> str:
+    """A detected value made safe to put on a names.txt line ("" if it can't be)."""
+    v = " ".join(re.sub(r"=>|[|#]", " ", value).split()).lstrip("@＠").strip(" ,;:.")
+    if not re.search(r"[^\W\d_]{2}", v) or _EMAIL.match(v) or _HANDLE.match(v):
+        return ""
+    # A leftover "Jr" or "van" (the rest of the name was matched by names.txt) is not a person.
+    if all(t.lower().strip(".,") in _SUFFIXES | _PARTICLES for t in v.split()):
+        return ""
+    return v
+
+
+def _suggestion_line(s: Suggestion) -> str:
+    left = f"# {s.name} =>"
+    note = (f"# [{s.placeholder}], {s.mentions} mention{'' if s.mentions == 1 else 's'} "
+            f"in {s.files} file{'' if s.files == 1 else 's'}")
+    return f"{left.ljust(_SUGGEST_COLUMN)}  {note}"
+
+
+def append_suggestions(path: Path, suggestions: list[Suggestion], profile_name: str) -> int:
+    """Add suggestions not already on any line of names.txt, commented out. Returns how many.
+
+    Appends only: the user's own lines are never rewritten.
+    """
+    known = known_aliases(path)
+    new, seen = [], set()
+    for s in suggestions:
+        key = _person_key(s.name)
+        if key and key not in known and key not in seen:
+            seen.add(key)
+            new.append(s)
+    if not new:
+        return 0
+    existing = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
+    today = date.today().isoformat()
+    if SUGGEST_HEADER in existing:
+        block = ["#", f"# More found on {today} ({profile_name} profile):"]
+    else:
+        block = [
+            SUGGEST_HEADER.ljust(78, "─"),
+            f"# People the scan found on {today} ({profile_name} profile). None of these",
+            *_SUGGEST_HELP,
+        ]
+    block += [_suggestion_line(s) for s in new]
+    lead = "" if not existing else ("\n" if existing.endswith("\n") else "\n\n")
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(lead + "\n".join(block) + "\n")
+    return len(new)
+
+
+# ── Setting roles by placeholder (``redact-local roles``) ──────────────────
+
+_PLACEHOLDER = re.compile(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*")
+
+
+@dataclass
+class RolesResult:
+    roles: int = 0       # lines given a role
+    kept: int = 0        # lines marked KEEP (not a person)
+    plain: int = 0       # lines made active with no role (keep their [PERSON-n])
+    added: int = 0       # people not on any line, added from key.csv
+    merged: int = 0      # lines folded into another line (same person, PERSON-1+PERSON-3=...)
+    lines: list[int] = field(default_factory=list)
+
+
+def _role_for(placeholder: str, role: str) -> str | None:
+    role = role.strip()
+    if not role:
+        return None
+    if role.upper() == KEEP_ROLE:
+        return KEEP_ROLE
+    try:
+        return _role_label(role, 0)
+    except SafeError:
+        raise UsageError(
+            f"The role for {placeholder} isn't valid: a role must start with a letter and can't be "
+            "a built-in placeholder (PERSON, EMAIL, PHONE, HANDLE, ADDRESS...)."
+        ) from None
+
+
+def _with_role(line: str, role: str | None) -> str:
+    """The names.txt line, uncommented, with its role set and any note after it kept."""
+    body = line.strip().lstrip("#").strip()
+    m = _INLINE_COMMENT.search(body)
+    note = body[m.start():].strip() if m else ""
+    body = body[:m.start()] if m else body
+    if "=>" in body:
+        body = body.rsplit("=>", 1)[0]
+    new = f"{body.strip()} => {role}" if role else f"{body.strip()} =>"
+    return f"{new.ljust(_SUGGEST_COLUMN)}  {note}" if note else new
+
+
+_LABEL_WORDS = {"address", "name", "customer", "phone", "city", "state", "zip", "date"}
+
+
+def _strip_label_words(alias: str) -> str:
+    """Drop form labels the model swept into a name: "Jane Example Address" -> "Jane Example"."""
+    toks = alias.split()
+    while len(toks) > 1 and toks[-1].strip(":").lower() in _LABEL_WORDS:
+        toks.pop()
+    while len(toks) > 1 and toks[0].strip(":").lower() in _LABEL_WORDS:
+        toks.pop(0)
+    return " ".join(toks)
+
+
+def _line_parts(line: str) -> tuple[list[str], str]:
+    """(aliases, trailing note) of a names.txt line, commented or not."""
+    body = line.strip().lstrip("#").strip()
+    m = _INLINE_COMMENT.search(body)
+    note = body[m.start():].strip() if m else ""
+    body = body[:m.start()] if m else body
+    if "=>" in body:
+        body = body.rsplit("=>", 1)[0]
+    return [a.strip() for a in body.split("|") if a.strip()], note
+
+
+def _merged_line(alias_lists: list[list[str]], role: str | None, note: str) -> str:
+    """One line for one person: every spelling, the plainest full name first (restore puts it back)."""
+    seen, aliases = set(), []
+    for lst in alias_lists:
+        for a in lst:
+            a = _strip_label_words(a)
+            if a and a.casefold() not in seen:
+                seen.add(a.casefold())
+                aliases.append(a)
+    names_only = [a for a in aliases if _classify(a).kind == "name"]
+    plain = [a for a in names_only if len(a.split()) >= 2 and all(t[:1].isupper() and t[1:].islower() for t in a.split() if t.isalpha())]
+    first = min(plain, key=len) if plain else (names_only[0] if names_only else aliases[0])
+    aliases.remove(first)
+    body = " | ".join([first, *aliases])
+    new = f"{body} => {role}" if role else f"{body} =>"
+    return f"{new.ljust(_SUGGEST_COLUMN)}  {note}" if note else new
+
+
+def set_roles(path: Path, assignments: list[tuple[str, str]], key_values: dict[str, list[str]],
+              line_placeholders: dict[int, str] | None = None) -> RolesResult:
+    """Give names.txt lines roles by placeholder, e.g. [("PERSON-4", "OWNER"), ("PERSON-9", "KEEP")].
+
+    ``PERSON-1+PERSON-3`` names one person under several placeholders: their lines are
+    merged into one line (every spelling kept as an alias, form labels like "Address"
+    dropped), which then gets the role.
+
+    A placeholder's line is, in order: the active line(s) that produce it now
+    (``line_placeholders``: line number -> placeholder, from key.csv); a commented
+    suggestion line with that "# [PERSON-4]" note (notes can be stale once lines are
+    copied and edited, so active lines are trusted first); any line with a spelling
+    key.csv has for it (``key_values``: placeholder -> spellings). Someone in the key but
+    on no line is added. All or nothing: if any placeholder can't be found, nothing is
+    written. Errors name placeholders only, never a value.
+    """
+    text = path.read_text(encoding="utf-8-sig")
+    lines = text.splitlines()
+    ours = [line.rstrip() in _BOILERPLATE or line.startswith(SUGGEST_HEADER) for line in lines]
+    line_keys = []
+    for line, skip in zip(lines, ours):
+        aliases, _note = _line_parts(normalize_entry(line))
+        line_keys.append(set() if skip else {k for k in (_person_key(a) for a in aliases) if k})
+    known_lines = {ln - 1 for ln in (line_placeholders or {})}
+
+    def lines_for(ph: str) -> tuple[list[int], list[str]]:
+        """(line indexes, spellings to add) for one placeholder."""
+        if line_placeholders:
+            found = sorted(ln - 1 for ln, p in line_placeholders.items() if p == ph)
+            if found:
+                return found, []
+        note = re.compile(rf"#\s*\[{re.escape(ph)}\](?![\w-])")
+        noted = [i for i, line in enumerate(lines) if not ours[i] and "=>" in line and note.search(line)]
+        commented = [i for i in noted if lines[i].lstrip().startswith("#")]
+        unknown = [i for i in noted if i not in known_lines]
+        if commented or unknown:
+            return [(commented or unknown)[0]], []
+        spellings = [s for s in (" ".join(re.sub(r"=>|[|#]", " ", v).split()) for v in key_values.get(ph, [])) if s]
+        keys = {k for k in (_person_key(s) for s in spellings) if k}
+        by_key = [i for i, lk in enumerate(line_keys) if lk & keys]
+        if by_key:
+            return [by_key[0]], []
+        if spellings:
+            return [], [max(spellings, key=lambda v: (len(v.split()) >= 2, len(v)))]
+        return [], []
+
+    plans = []        # (line indexes, extra spellings, role, label for errors)
+    missing, claimed = [], {}
+    for raw_ph, raw_role in assignments:
+        phs = [p.strip().strip("[]").upper() for p in raw_ph.split("+") if p.strip()]
+        if not phs or not all(_PLACEHOLDER.fullmatch(p) for p in phs):
+            raise UsageError("A placeholder should look like PERSON-4 (with or without the brackets); "
+                             "join one person's placeholders with +, e.g. PERSON-1+PERSON-3=OWNER.")
+        label = "+".join(phs)
+        role = _role_for(label, raw_role)
+        idxs, extra = [], []
+        for ph in phs:
+            i, s = lines_for(ph)
+            if not i and not s:
+                missing.append(ph)
+            idxs += [x for x in i if x not in idxs]
+            extra += s
+        for i in idxs:
+            if i in claimed:
+                if claimed[i] == (label, role):
+                    continue
+                raise UsageError(f"{claimed[i][0]} and {label} share a names.txt line with different roles. "
+                                 "Give it one role, and join one person's placeholders with +, "
+                                 "e.g. PERSON-1+PERSON-3=OWNER.")
+            claimed[i] = (label, role)
+        if any(p[:3] == (idxs, extra, role) for p in plans):
+            continue                                          # the same assignment twice
+        plans.append((idxs, extra, role, label))
+    if missing:
+        raise UsageError(f"Not in names.txt or the key, so nothing was changed: {', '.join(missing)}.")
+
+    result = RolesResult()
+    replace: dict[int, str] = {}
+    drop: set[int] = set()
+    appended: list[str] = []
+    for idxs, extra, role, _label in plans:
+        if not idxs:
+            appended.append(_merged_line([extra], role, ""))
+            result.added += 1
+        elif len(idxs) == 1 and not extra:
+            replace[idxs[0]] = _with_role(lines[idxs[0]], role)
+        else:
+            parts = [_line_parts(lines[i]) for i in idxs]
+            replace[idxs[0]] = _merged_line([a for a, _n in parts] + [extra], role, parts[0][1])
+            drop.update(idxs[1:])
+            result.merged += len(idxs) - 1
+        if role == KEEP_ROLE:
+            result.kept += 1
+        elif role:
+            result.roles += 1
+        else:
+            result.plain += 1
+
+    new_lines = []
+    for i, line in enumerate(lines):
+        if i in drop:
+            continue
+        new_lines.append(replace.get(i, line))
+        if i in replace:
+            result.lines.append(len(new_lines))
+    for line in appended:
+        new_lines.append(line)
+        result.lines.append(len(new_lines))
+
+    backup = path.with_suffix(".txt.bak")
+    backup.write_text(text, encoding="utf-8")
+    path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    try:
+        parse(path)
+    except SafeError:
+        path.write_text(text, encoding="utf-8")   # put it back as it was
+        raise
+    return result
 
 
 # ── Matching ───────────────────────────────────────────────────────────────
@@ -222,10 +569,16 @@ def _seq_regex(tokens: list[str]) -> str:
     return _SEP.join(parts)
 
 
-def _bounded(body: str) -> str:
+def _bounded(body: str, glued: bool = False) -> str:
     # Letter-only boundaries: "Fakerton2", "Fakerton_resume", "%20Fakerton" and "@janeexample"
     # all match; "Fakertonville" doesn't. A trailing plural "s" is taken too ("the Fakertons").
-    return rf"(?<![^\W\d_]){body}s?(?![^\W\d_])"
+    if not glued:
+        return rf"(?<![^\W\d_]){body}s?(?![^\W\d_])"
+    # Multi-word names also match where OCR or a file name ran them into the next word at a
+    # lowercase-to-capital break: "ToJaneExample<", "JaneExampleInvoice". (Case-sensitive
+    # checks, so "Donald" alone never matches inside "McDonald": one-word names don't use this.)
+    return (rf"(?:(?<![^\W\d_])|(?-i:(?<=[a-z])(?=[A-Z]))){body}s?"
+            rf"(?:(?![^\W\d_])|(?-i:(?<=[a-z])(?=[A-Z])))")
 
 
 def _name_variants(name: str, wanted: list[str]) -> list[tuple[str, str, str | None]]:
@@ -307,5 +660,5 @@ def build_matchers(nf: NamesFile, variants: list[str], on_keep_list, ordinary: s
                             alt = "|".join(re.escape(f) for f in sorted(forms))
                             matchers.append(Matcher(re.compile(_bounded(f"(?:{alt})")), entry, "name", label))
                             continue
-                    matchers.append(Matcher(re.compile(_bounded(body), re.I), entry, "name", label))
+                    matchers.append(Matcher(re.compile(_bounded(body, glued=word is None), re.I), entry, "name", label))
     return matchers
