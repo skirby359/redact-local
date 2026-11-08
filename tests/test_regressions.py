@@ -227,7 +227,7 @@ def test_subfolder_run_uses_the_matter(matter):
     result = run(matter, target=sub)
     assert result.matter == matter and result.out_dir == out_dir(matter)
     assert not (sub / "_redact").exists()
-    assert not (matter / "Fakerton emails - redacted").exists()
+    assert not (matter / "Fakerton emails - redacted").exists() and not (sub / "redacted").exists()
     outs = outputs(matter)
     assert "top.txt.txt" in outs  # the subfolder run left other outputs alone
     assert all("fakerton" not in name.lower() for name in outs)

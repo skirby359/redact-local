@@ -21,11 +21,16 @@ Follow them exactly.
    its `_redact` subfolder.** That includes `names.txt`, `keep.txt`, `key.csv`,
    `review.html`, `manifest.json` and `run.log`. Don't `ls` the input folder either:
    file names can contain names. Don't run a recursive search from any folder that
-   contains it.
+   contains it. **The one exception is the output folder, `<folder>\redacted\`** (rule 4).
+   Go to it by its full path, as the CLI prints it; never list the input folder to find
+   it, and keep any search inside it.
 2. **Run the CLI and report only what it prints**: counts and paths.
 3. **Tell the user to open `review.html` themselves** and check it. Never open it.
-4. **Read the `<folder> - redacted` folder only after the user confirms they've reviewed
-   it.** Reading `_summary.json` there is fine at any time (counts only).
+4. **Read `<folder>\redacted\` only after the user confirms they've reviewed it.**
+   Reading `_summary.json` there is fine at any time (counts only). Use the "Output
+   folder:" path the CLI printed. Matters run before 0.2.0 have an older copy beside the
+   folder, `<folder> - redacted\`. When the CLI reports one, tell the user they can delete
+   it, and don't read it: it's no longer updated.
 5. **Write drafts with the placeholders** (`[CLIENT]`, `[PERSON-2]`, `[EMAIL-1]`...).
    Use `restore` to make the real-name version, and **never open the restored file**
    (`* - restored.*`, or anything in `_redact\restored\`).
@@ -55,7 +60,14 @@ read the output folder until a rerun no longer shows it.** That file may carry a
 less-redacted name.
 
 Running on a subfolder or a single file uses the matter it belongs to (the CLI prints
-which), so `run` the matter folder itself the first time.
+which), so `run` the matter folder itself the first time. If the matter already has a
+`redacted` subfolder of the user's own, the run stops with exit 1 and asks them to rename
+it.
+
+The CLI's first line, the top of `review.html`, `_summary.json` ("build") and the first
+line of each output file show the tool version, as `0.2.0 (b62ff95)`: the version, then
+the git commit. `+changes` after the commit means the run used uncommitted code. Use it
+when the user asks which version produced a run.
 
 Profiles: `client` (default, strict: every person not on a keep list is redacted) and
 `court-records` (keeps judges, counsel and citations; still removes contact details and
@@ -82,7 +94,7 @@ IDs). Choosing the looser profile is the user's call. Ask; don't pick it yoursel
      (all matters) or `_redact/keep.txt` (this matter)
    - a "possible miss" that's just a word → `{{CONFIG_DIR}}/common-words.txt`
 4. **Rerun** until the user is satisfied. Placeholders stay stable across reruns.
-5. **The user tells you it's reviewed.** Then read `<folder> - redacted\`.
+5. **The user tells you it's reviewed.** Then read `<folder>\redacted\`.
    - **Roles from context, without seeing names:** if people are still `[PERSON-n]`,
      propose roles from what the redacted text shows (`PERSON-4 → OWNER: signs the
      repair order as customer`). The user checks each against `review.html`. On their OK,

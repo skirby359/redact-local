@@ -2,6 +2,7 @@
 # The tool writes these next to the documents, not in this repo, but if a
 # matter folder ever lands here by mistake these rules keep it out of git.
 _redact/
+redacted/
 * - redacted/
 * - restored.*
 key.csv

@@ -24,7 +24,7 @@ import sys  # noqa: E402
 import traceback  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from redact_local import __version__  # noqa: E402
+from redact_local import build  # noqa: E402
 from redact_local.errors import SafeError  # noqa: E402
 
 EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_NETWORK, EXIT_PARTIAL = 0, 1, 2, 3, 4
@@ -94,7 +94,7 @@ def cmd_run(args) -> int:
     s = result.summary
     f, pg, r, k = s["files"], s["pages"], s["redactions"], s["kept"]
     types = ", ".join(f"{t} {n}" for t, n in f["by_type"].items()) or "none"
-    print(f"redact-local {__version__} | profile: {result.profile} | model: {result.model}")
+    print(f"redact-local {build()} | profile: {result.profile} | model: {result.model}")
     print(f"Files: {f['processed']} processed ({types}); {f['skipped']} skipped (unsupported type); {f['failed']} failed")
     read = []
     if pg["pdf_pages"]:
@@ -147,6 +147,9 @@ def cmd_run(args) -> int:
     print(f"Output folder: {result.out_dir}")
     print(f"Review sheet:  {result.review}")
     print("  The review sheet contains the original values. Open it yourself; Claude must not read it.")
+    if result.legacy_out:
+        print(f"Older output folder (before 0.2.0), no longer updated: {result.legacy_out}")
+        print("  Delete it once you no longer need it, so nobody reads stale output.")
 
     if result.blocked:
         _print_blocked(result.blocked)
@@ -223,7 +226,7 @@ def cmd_profiles(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="redact-local", description="De-identify matter documents on this machine.")
-    p.add_argument("--version", action="version", version=f"redact-local {__version__}")
+    p.add_argument("--version", action="version", version=f"redact-local {build()}")
     sub = p.add_subparsers(dest="command", required=True)
 
     r = sub.add_parser("run", help="Redact a matter folder (or one file in it).")

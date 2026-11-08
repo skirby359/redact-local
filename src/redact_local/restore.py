@@ -2,8 +2,9 @@
 
 ``redact-local restore <draft> --matter <folder>`` reads ``<folder>\\_redact\\key.csv``
 and writes ``<draft stem> - restored<ext>`` next to the draft. If the draft is
-inside a "- redacted" folder (which Claude reads), the restored copy goes to
-``<matter>\\_redact\\restored\\`` instead, so real names never land where Claude looks.
+inside an output folder (``<matter>\\redacted``, or an older ``<matter> - redacted``),
+which Claude reads, the restored copy goes to ``<matter>\\_redact\\restored\\`` instead,
+so real names never land where Claude looks.
 
 Supports .txt, .md and .docx drafts. Nothing is printed except counts and the
 output path.
@@ -16,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from redact_local.errors import SafeError
-from redact_local.pipeline import OUT_SUFFIX, PRIVATE
+from redact_local.pipeline import LEGACY_SUFFIX, PRIVATE, is_output_dir
 from redact_local.placeholders import PLACEHOLDER_RE, load_restore_map
 
 TEXT_EXT = {".txt", ".md", ".markdown"}
@@ -31,11 +32,13 @@ class RestoreResult:
 
 
 def find_key(matter: Path) -> Path:
-    """Accept the matter folder, its _redact folder, or its "- redacted" folder."""
+    """Accept the matter folder, its _redact folder, or its output folder (new or old)."""
     matter = matter.expanduser().resolve()
     candidates = [matter / PRIVATE / "key.csv", matter / "key.csv"]
-    if matter.name.endswith(OUT_SUFFIX):
-        candidates.append(matter.parent / matter.name[: -len(OUT_SUFFIX)] / PRIVATE / "key.csv")
+    if is_output_dir(matter) and not matter.name.endswith(LEGACY_SUFFIX):
+        candidates.append(matter.parent / PRIVATE / "key.csv")
+    if matter.name.endswith(LEGACY_SUFFIX):
+        candidates.append(matter.parent / matter.name[: -len(LEGACY_SUFFIX)] / PRIVATE / "key.csv")
     for c in candidates:
         if c.is_file():
             return c
@@ -58,7 +61,7 @@ def _swap(text: str, mapping: dict[str, str], stats: dict, count_unknown: bool =
 
 def _output_path(draft: Path, key_path: Path) -> Path:
     name = f"{draft.stem} - restored{draft.suffix}"
-    if any(p.name.endswith(OUT_SUFFIX) for p in (draft.parent, *draft.parent.parents)):
+    if any(is_output_dir(p) for p in (draft.parent, *draft.parent.parents)):
         out = key_path.parent / "restored"
         out.mkdir(exist_ok=True)
         return out / name

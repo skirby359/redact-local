@@ -85,7 +85,7 @@ def run(m: Path, profile: str = "client", target: Path | None = None, **kw):
 
 
 def out_dir(m: Path) -> Path:
-    return m.parent / f"{m.name} - redacted"
+    return m / "redacted"
 
 
 def outputs(m: Path) -> dict[str, str]:

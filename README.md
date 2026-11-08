@@ -59,7 +59,7 @@ from the current folder.
 
 ```
 run → confirm the suggested names.txt → check review.html → fix the lists → rerun
-    → Claude reads the "- redacted" folder → Claude drafts with placeholders → restore
+    → Claude reads the "redacted" folder → Claude drafts with placeholders → restore
 ```
 
 1. **Run** (or ask Claude to, via the skill):
@@ -81,7 +81,7 @@ run → confirm the suggested names.txt → check review.html → fix the lists 
 5. **Rerun.** Placeholders don't change between runs, so nothing you've already read goes
    stale. The lists carry over, so the next document of the same kind should need few or
    no fixes. That's the point: correcting is a one-time job per kind of document.
-6. **Tell Claude you've reviewed it.** Claude then reads `<matter> - redacted\`.
+6. **Tell Claude you've reviewed it.** Claude then reads `<matter>\redacted\`.
 7. **Claude drafts using the placeholders** (`[CLIENT]`, `[PERSON-2]`...), then you (or
    Claude) run `restore` to get the real-name version, which Claude doesn't open:
    ```
@@ -100,15 +100,28 @@ For a matter folder `X`:
 | `X\_redact\key.csv` | placeholder → original value (persistent) | you, and `restore` |
 | `X\_redact\review.html` | the review sheet (contains originals) | you |
 | `X\_redact\manifest.json`, `run.log` | bookkeeping; the log can hold file names and tracebacks | you |
-| `X - redacted\` | one `.txt` per source file, plus `_summary.json` (counts only) | Claude, after you've reviewed |
+| `X\redacted\` | one `.txt` per source file, plus `_summary.json` (counts only) | Claude, after you've reviewed |
 
 Output file names are redacted too (`Jane_Example notice.pdf` → `[CLIENT] notice.pdf.txt`),
-including subfolder names. Only text is written: images are never copied.
+including subfolder names. Only text is written: images are never copied. A run never
+reads `X\redacted\` or `X\_redact\` as input.
+
+If `X` already has a `redacted` folder of your own, the run stops and asks you to rename
+it, rather than mixing your files into the folder Claude reads.
+
+Before 0.2.0 the output went beside the matter, in `X - redacted\`. A run leaves that
+folder alone and prints its path. Delete it when you no longer need it.
 
 A file or subfolder is treated as part of its matter, which is the nearest folder at or
 above it that has a `_redact` folder: after a first `run "X"`, `run "X\emails"` or
-`run "X\notice.pdf"` uses `X\_redact` and writes into `X - redacted\`, leaving the
+`run "X\notice.pdf"` uses `X\_redact` and writes into `X\redacted\`, leaving the
 outputs for the rest of the matter alone. The CLI prints the matter folder it used.
+
+**Which version ran?** The CLI's first line, the top of `review.html`, `_summary.json`
+(`"build"`) and the first line of each output file show it as `0.2.0 (b62ff95)`: the
+version, then the git commit when the tool runs from a checkout. `+changes` after the
+commit means `src\` or `config\` had uncommitted changes. `redact-local --version` shows
+the same thing.
 
 Before detection the text is normalized so variants can't slip past: Unicode NFKC
 (ligatures, fullwidth letters), soft hyphens and zero-width characters removed, curly
@@ -311,8 +324,10 @@ Jane Example | jexample0x@example.me | jexampleOx@example.me | jexampleox@exampl
 `key.csv` and writes `<draft> - restored.<ext>` next to the draft. Supports `.txt`, `.md`
 and `.docx` (formatting is kept unless a placeholder was split across Word runs, in which
 case that paragraph's runs are merged). Placeholders not in the key are left as they are.
-If the draft is inside a `- redacted` folder, the restored copy goes to
-`<matter>\_redact\restored\` instead, so real names never land where Claude reads.
+If the draft is inside the output folder (`<matter>\redacted\`, or an older
+`<matter> - redacted\`), the restored copy goes to `<matter>\_redact\restored\` instead,
+so real names never land where Claude reads. `--matter` accepts the matter folder, its
+`_redact` folder or its output folder.
 
 ## The network guard
 

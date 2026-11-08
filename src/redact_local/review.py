@@ -12,6 +12,8 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+from redact_local import build
+
 CSS = """
 body{font:14px/1.45 system-ui,Segoe UI,sans-serif;margin:24px auto;max-width:1200px;padding:0 16px;color:#1d1d1f}
 h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px;border-bottom:1px solid #ddd;padding-bottom:4px}
@@ -146,7 +148,8 @@ def write(path: Path, *, matter: Path, out_dir: Path, profile, files: list, skip
 <meta name=robots content=noindex>
 <title>redact-local review</title><style>{CSS}</style></head><body>
 <h1>Redaction review</h1>
-<div class=meta>Matter folder: <code>{_e(matter)}</code><br>
+<div class=meta>Tool: <b>redact-local {_e(build())}</b><br>
+Matter folder: <code>{_e(matter)}</code><br>
 Output: <code>{_e(out_dir)}</code><br>
 Profile: <b>{_e(profile.name)}</b> ({_e(profile.description)}) · Model: {_e(profile.spacy_model)} ·
 Run: {_e(datetime.now().strftime('%Y-%m-%d %H:%M'))}<br>

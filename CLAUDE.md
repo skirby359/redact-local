@@ -13,7 +13,10 @@ about an identifiable person** while working on this repo.
   `review.html`, `manifest.json` and `run.log` all hold real values.
 - **Never open the input documents.** Run the CLI and report its counts.
 - **Never open `* - restored.*` files** or `_redact/restored/`. They hold the real names.
-- **Read a `* - redacted` folder only after the user says they've checked `review.html`.**
+- **Read a matter's `redacted\` subfolder only after the user says they've checked
+  `review.html`.** Matters run before 0.2.0 have an older `* - redacted` folder beside them,
+  with the same rule. Reach the `redacted\` folder by its full path; listing the matter
+  folder to find it would show the original file names.
 - **The CLI must never print document text, detected values, or the contents of names.txt,
   key.csv or review.html.** Counts and paths only. Exception messages must not echo document
   text either: raise `redact_local.errors.SafeError` with a fixed message, and send details to

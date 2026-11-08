@@ -5,13 +5,16 @@ Layout, for a matter folder ``X``:
     X\                    the originals (never modified)
     X\_redact\            private: names.txt, keep.txt, key.csv, review.html,
                           manifest.json, run.log. Claude never reads this.
-    X - redacted\         one .txt per source file, names redacted too, plus
+    X\redacted\           one .txt per source file, names redacted too, plus
                           _summary.json (counts only). Claude reads this after
-                          the user has checked review.html.
+                          the user has checked review.html. Never read as input.
+
+Before 0.2.0 the output went to a sibling folder, ``X - redacted``. A run leaves
+that folder alone and reports it, so the user can delete it.
 
 A file or subfolder is treated as part of its matter (the nearest folder above
 it with a _redact folder): same names.txt, same key, output into the same
-"- redacted" folder.
+``redacted`` folder.
 """
 
 from __future__ import annotations
@@ -29,14 +32,15 @@ from dataclasses import dataclass, field  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from redact_local import __version__, names, review  # noqa: E402
+from redact_local import __version__, build, names, review  # noqa: E402
 from redact_local.config import config_dir, load_common_words, load_keep_terms, load_profile, normalize_term  # noqa: E402
 from redact_local.errors import SafeError  # noqa: E402
 from redact_local.placeholders import Registry  # noqa: E402
 from redact_local.textnorm import normalize_text  # noqa: E402
 
 PRIVATE = "_redact"
-OUT_SUFFIX = " - redacted"
+OUT_NAME = "redacted"          # <matter>\redacted\, next to <matter>\_redact\
+LEGACY_SUFFIX = " - redacted"  # before 0.2.0: <matter> - redacted\, beside the matter
 SKIP_FILES = {"desktop.ini", "thumbs.db", ".ds_store"}
 
 log = logging.getLogger("redact_local.run")
@@ -69,6 +73,41 @@ class RunResult:
     blocked: list[dict]
     names_suggested: int = 0          # people added to names.txt, commented out
     names_suggest_failed: bool = False
+    legacy_out: Path | None = None    # an older "<matter> - redacted" folder, left alone
+
+
+def is_output_dir(p: Path) -> bool:
+    """A redact-local output folder: ``<matter>\\redacted`` (beside a ``_redact`` folder),
+    or an older ``<matter> - redacted`` folder."""
+    return p.name.endswith(LEGACY_SUFFIX) or (p.name.casefold() == OUT_NAME and (p.parent / PRIVATE).is_dir())
+
+
+def legacy_out_dir(matter: Path) -> Path:
+    return matter.parent / f"{matter.name}{LEGACY_SUFFIX}"
+
+
+def _check_out_dir(out_dir: Path, private: Path) -> None:
+    """Refuse to write into a "redacted" folder redact-local didn't make.
+
+    It could be the user's own folder (court-redacted filings, say). Writing into it
+    would mix their files into the folder Claude reads, and skip them as input.
+    """
+    if not out_dir.exists():
+        return
+    if out_dir.is_dir():
+        if not any(out_dir.iterdir()):
+            return
+        for marker, key, want in ((out_dir / "_summary.json", "tool", "redact-local"),
+                                  (private / "manifest.json", "out_dir", OUT_NAME)):
+            try:
+                if json.loads(marker.read_text(encoding="utf-8")).get(key) == want:
+                    return
+            except (OSError, ValueError, AttributeError):
+                pass
+    raise SafeError(
+        f"The matter folder already has something named '{OUT_NAME}' that redact-local didn't create. "
+        "redact-local writes its output there. Rename it, then rerun."
+    )
 
 
 def matter_paths(path: str | os.PathLike) -> tuple[Path, Path | None]:
@@ -78,7 +117,7 @@ def matter_paths(path: str | os.PathLike) -> tuple[Path, Path | None]:
     ``_redact`` folder; failing that, the input folder (or a file's folder). The
     scope is the file or subfolder to process, or None for the whole matter. So
     ``run X/emails`` after ``run X`` reuses X's names.txt and key and writes into
-    ``X - redacted``, rather than starting a new, empty matter inside the originals.
+    ``X\\redacted``, rather than starting a new, empty matter inside the originals.
     """
     p = Path(path).expanduser()
     if not p.exists():
@@ -86,7 +125,7 @@ def matter_paths(path: str | os.PathLike) -> tuple[Path, Path | None]:
     p = p.resolve()
     start = p if p.is_dir() else p.parent
     for part in (start, *start.parents):
-        if part.name == PRIVATE or part.name.endswith(OUT_SUFFIX):
+        if part.name == PRIVATE or is_output_dir(part):
             raise SafeError(
                 "That path is inside redact-local's private or output folder. "
                 "Point at the original matter folder instead."
@@ -102,12 +141,15 @@ def _in_scope(source: str, scope_rel: Path | None) -> bool:
     return src == scope_rel or scope_rel in src.parents
 
 
-def _walk(root: Path) -> tuple[list[Path], list[Path]]:
+def _walk(root: Path, out_dir: Path) -> tuple[list[Path], list[Path]]:
     from redact_local.extract import SUPPORTED
 
     files, skipped = [], []
     for here, dirs, fnames in os.walk(root):
-        dirs[:] = sorted(d for d in dirs if d != PRIVATE and not d.endswith(OUT_SUFFIX) and not d.startswith("."))
+        dirs[:] = sorted(
+            d for d in dirs
+            if d != PRIVATE and not d.endswith(LEGACY_SUFFIX) and not d.startswith(".") and Path(here, d) != out_dir
+        )
         for fn in sorted(fnames):
             if fn.startswith(("~$", ".")) or fn.lower() in SKIP_FILES:
                 continue
@@ -270,10 +312,14 @@ def run(
     matter, scope = matter_paths(path)
     private = matter / PRIVATE
     private.mkdir(exist_ok=True)
-    out_dir = matter.parent / f"{matter.name}{OUT_SUFFIX}"
+    out_dir = matter / OUT_NAME
+    _check_out_dir(out_dir, private)
     log_path, handler = _open_log(private)
     try:
-        return _run(matter, scope, private, out_dir, log_path, profile_name, config, suggest_names)
+        result = _run(matter, scope, private, out_dir, log_path, profile_name, config, suggest_names)
+        legacy = legacy_out_dir(matter)
+        result.legacy_out = legacy if legacy.is_dir() else None
+        return result
     finally:
         logging.getLogger("redact_local").removeHandler(handler)
         handler.close()
@@ -312,7 +358,7 @@ def _run(matter, scope, private, out_dir, log_path, profile_name, config, sugges
             raise SafeError("Unsupported file type.")
         files, skipped = [scope], []
     else:
-        files, skipped = _walk(scope or matter)
+        files, skipped = _walk(scope or matter, out_dir)
 
     # Pass 1: extract and detect.
     results: list[FileResult] = []
@@ -357,7 +403,11 @@ def _run(matter, scope, private, out_dir, log_path, profile_name, config, sugges
     manifest: dict[str, str] = {}
     if manifest_path.is_file():
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8")).get("outputs", {})
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            # A manifest without "out_dir" lists outputs in the old "- redacted" folder,
+            # which this run doesn't touch.
+            if data.get("out_dir") == OUT_NAME:
+                manifest = data.get("outputs", {})
         except (ValueError, AttributeError):
             manifest = {}
     stale_left = 0
@@ -404,7 +454,7 @@ def _run(matter, scope, private, out_dir, log_path, profile_name, config, sugges
             manifest[fr.source] = fr.output
     finally:
         registry.save()
-        manifest_path.write_text(json.dumps({"outputs": manifest}, indent=1), encoding="utf-8")
+        manifest_path.write_text(json.dumps({"out_dir": OUT_NAME, "outputs": manifest}, indent=1), encoding="utf-8")
 
     blocked = netguard.attempts()
     for a in blocked:
@@ -447,7 +497,7 @@ def _header(profile: str, fr: FileResult) -> str:
         how += f", {ex.pages} page(s)" + (f", {ex.ocr_pages} OCR'd" if ex.ocr_pages else "")
     elif ex.kind == "image":
         how += ", OCR"
-    return f"[redact-local | profile: {profile} | source: {how} | {len(fr.analysis.spans)} redaction(s)]\n\n"
+    return f"[redact-local {build()} | profile: {profile} | source: {how} | {len(fr.analysis.spans)} redaction(s)]\n\n"
 
 
 def _prune_empty_dirs(root: Path) -> None:
@@ -476,6 +526,7 @@ def _summary(profile, results: list[FileResult], skipped, registry: Registry, bl
     return {
         "tool": "redact-local",
         "version": __version__,
+        "build": build(),
         "profile": profile.name,
         "spacy_model": profile.spacy_model,
         "run_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
