@@ -126,6 +126,38 @@ def test_clean_suggestion_drops_what_cannot_be_a_names_line():
         assert names.clean_suggestion(junk) == "", junk
 
 
+def test_form_labels_and_code_are_not_suggested_but_real_names_are():
+    ordinary = {"is", "check", "checked", "trigger", "use", "layout", "round", "grace", "hope",
+                "vale", "la", "mac", "van", "horn", "rose", "shawn", "arthur"}
+    for label in ("Email", "E-mail", "Full Name", "Phone:", "To"):
+        assert names.clean_suggestion(label, ordinary) == "", label
+    for code in ("IsChecked Trigger", "UseLayoutRounding"):
+        assert names.clean_suggestion(code, ordinary) == "", code
+    for person in ("DeShawn McDonald", "LaToya MacArthur", "JaVale Fakename", "VanHorn Testwell",
+                   "Grace Hope", "Jane O'Neil", "Marisol Testwell"):
+        assert names.clean_suggestion(person, ordinary) == person, person
+    # Without the word list, the code check is off and nothing new is dropped.
+    assert names.clean_suggestion("IsChecked Trigger") == "IsChecked Trigger"
+
+
+def test_a_run_suggests_people_but_not_labels_code_or_network_terms(tmp_path):
+    m = tmp_path / "Matter 009"
+    m.mkdir()
+    (m / "dpi.txt").write_text("The carrier filters its customers' traffic with Deep Packet\nInspection.",
+                               encoding="utf-8")
+    (m / "form.txt").write_text("Contact us\nEmail *\nnobody@example.com\nPick a topic below", encoding="utf-8")
+    (m / "log.txt").write_text("Commit note: drop IsChecked Trigger that reset the focus ring", encoding="utf-8")
+    (m / "people.txt").write_text(f"Ms. DeShawn McDonald met {OTHER} about the appeal.", encoding="utf-8")
+    run(m)
+    body = (m / "_redact" / "names.txt").read_text(encoding="utf-8")
+    suggested = {line.split("=>")[0].lstrip("# ").strip() for line in body.splitlines()
+                 if line.startswith("# ") and "mention" in line}
+    assert suggested == {"DeShawn McDonald", OTHER}
+    out = outputs(m)
+    assert "Deep Packet\nInspection" in out["dpi.txt.txt"]   # on the keep list, so left in
+    assert "IsChecked" not in out["log.txt.txt"]            # not suggested, but still redacted
+
+
 def test_first_run_suggests_people_and_an_uncommented_line_takes_a_role(tmp_path):
     m = tmp_path / "Matter 003"
     m.mkdir()

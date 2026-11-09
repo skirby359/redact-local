@@ -267,13 +267,54 @@ def known_aliases(path: Path) -> set[str]:
     return out
 
 
-def clean_suggestion(value: str) -> str:
-    """A detected value made safe to put on a names.txt line ("" if it can't be)."""
+# Words that label a field in a form or an email header. A detection made only of these
+# ("Email", "Full Name") is the label the model took for a person.
+_FIELD_LABELS = {
+    "email", "e-mail", "mail", "phone", "tel", "telephone", "mobile", "cell", "fax", "name", "full",
+    "first", "last", "middle", "surname", "address", "street", "city", "state", "zip", "country",
+    "subject", "from", "to", "cc", "bcc", "sent", "date", "reply", "forward", "attachment",
+    "attachments", "message", "details", "password", "username", "user", "login", "account",
+    "company", "title", "customer", "signature",
+}
+# Where an inner capital starts a real name: McDonald, MacArthur, FitzGerald, and the
+# particles (DeShawn, LaToya, DiCaprio, VanHorn).
+_NAME_PREFIXES = _PARTICLES | {"mc", "mac", "fitz", "o"}
+_CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])")
+
+
+def _is_ordinary(word: str, ordinary: set[str]) -> bool:
+    w = word.lower()
+    return w in ordinary or any(w.endswith(s) and w[: -len(s)] in ordinary for s in ("s", "es", "ed", "d", "ing", "er"))
+
+
+def _looks_like_code(token: str, ordinary: set[str]) -> bool:
+    """An identifier made of ordinary words run together: IsChecked, UseLayoutRounding.
+
+    Real names with an inner capital start with a name prefix (McDonald, DeShawn) or
+    have a piece that isn't an ordinary word (JaVale), so they don't match.
+    """
+    pieces = _CAMEL.split(token.strip(".,;:*()"))
+    if len(pieces) < 2 or pieces[0].lower() in _NAME_PREFIXES:
+        return False
+    return all(_is_ordinary(p, ordinary) for p in pieces)
+
+
+def clean_suggestion(value: str, ordinary: set[str] = frozenset()) -> str:
+    """A detected value made safe to put on a names.txt line ("" if it can't be, or if it
+    is plainly not a person: a form label, or code). ``ordinary`` is the English word list.
+
+    Only suggestions are filtered. A value dropped here is still redacted in the output.
+    """
     v = " ".join(re.sub(r"=>|[|#]", " ", value).split()).lstrip("@＠").strip(" ,;:.")
     if not re.search(r"[^\W\d_]{2}", v) or _EMAIL.match(v) or _HANDLE.match(v):
         return ""
+    toks = v.split()
     # A leftover "Jr" or "van" (the rest of the name was matched by names.txt) is not a person.
-    if all(t.lower().strip(".,") in _SUFFIXES | _PARTICLES for t in v.split()):
+    if all(t.lower().strip(".,") in _SUFFIXES | _PARTICLES for t in toks):
+        return ""
+    if all(t.lower().strip(".,:*") in _FIELD_LABELS for t in toks):
+        return ""
+    if ordinary and any(_looks_like_code(t, ordinary) for t in toks):
         return ""
     return v
 

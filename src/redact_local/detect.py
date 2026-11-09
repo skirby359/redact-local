@@ -72,6 +72,70 @@ _OCR_MARK = re.compile(r"^\[OCR\]\n", re.M)
 _WORD = re.compile(r"[^\W\d_]+")
 _CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])")
 
+# First names that are also ordinary English words. The model often reads them as the word
+# ("Will" the verb, "Hope" the noun), and "Possible misses" skips ordinary words, so a lone
+# "Will" could be left in without a flag. These get position rules (_word_name_position).
+# Left out on purpose: months and weekdays, and names that here usually mean a place or a
+# company (Chase, Pierce, Mason, King).
+WORD_NAMES = frozenset("""
+    amber art autumn barb belle bill bob bonnie brook bud buddy candy carol carter charity chip
+    chuck clay cliff colt daisy dale dawn dean destiny don drew duke earl ed eve faith fern flora
+    frank gale gene ginger glen grace grant guy hank harmony hazel heather herb holly hope hunter
+    iris ivy jack jade jasmine jay jean joe joy lark laurel lily mark max melody mercy miles misty
+    nan nick olive opal pat patience pearl peg penny piper randy raven ray reed rex rich rob robin
+    rod rose rowan ruby rusty ruth sage sally sandy sue summer sunny ted terry tom victor violet
+    wade warren will willow woody wren
+""".split())
+_WORD_NAME_RE = re.compile(r"(?<![^\W\d_])[A-Z][a-z]+(?![^\W\d_])")
+# The word, not the name: "the Bill", "a Grant Deed", "Last Will and Testament".
+_NOT_NAME_BEFORE = {
+    "the", "a", "an", "this", "that", "these", "those", "any", "each", "every", "no", "some",
+    "our", "your", "his", "her", "their", "its", "my", "last",
+}
+_NOT_NAME_AFTER = re.compile(
+    r"[ \t]*(?:\d|of\b|(?:County|City|Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Way|Boulevard|Blvd"
+    r"|Court|Ct|Park|River|Creek|Lake|Mountain|Valley|Bay|Island|Bank|Hall|School|College|University"
+    r"|Hospital|Center|Centre|Deed|Garden|Gardens|Program|Fund|Act|Agreement|Foundation|Group|Inc|LLC"
+    r"|Corp|Company)\b)"
+)
+_SPEECH_AFTER = re.compile(
+    r"[ \t]+(?:said|says|wrote|writes|called|calls|asked|asks|told|tells|replied|replies|emailed|texted"
+    r"|mentioned|agreed|confirmed|explained|noted)\b"
+)
+_LINE_START = re.compile(r"^[ \t>]*(?:(?:[-*•–]|\d+[.)])[ \t]*)?$")
+_CLOSING = re.compile(
+    r"^[ \t>]*(?:thanks|thank you|many thanks|best|best regards|regards|kind regards|warm regards"
+    r"|sincerely|yours(?: truly| sincerely)?|cheers|cordially|respectfully|take care|all the best)[ \t,.!]*$",
+    re.I,
+)
+
+
+def _word_name_position(text: str, a: int, b: int) -> bool | None:
+    """Whether the capitalized word at text[a:b] sits where a name goes.
+
+    True: after a greeting or header label ("Hi Will,", "From: Will"), mid-sentence
+    ("Bill and Will said"), at a sentence start when a comma or a "said"-type verb follows
+    ("Will, please...", "Hope wrote..."), or alone on the line after a closing ("Best,\\nHope").
+    False: the ordinary word ("Will you...", "Hope this helps", "the Bill of Sale",
+    "Grant County"). None: alone on a line with no closing above, so it can't be told.
+    """
+    line_start = text.rfind("\n", 0, a) + 1
+    line_end = text.find("\n", b)
+    line_end = len(text) if line_end < 0 else line_end
+    before, after = text[line_start:a], text[b:line_end]
+    if _LINE_START.match(before) and not after.strip(" \t.,!"):
+        prev = next((ln for ln in reversed(text[:line_start].split("\n")) if ln.strip(" \t>")), "")
+        return True if _CLOSING.match(prev) else None
+    if _NOT_NAME_AFTER.match(after):
+        return False
+    prev_word = re.search(r"([^\W\d_]+)[^\w\n]*$", before)
+    if prev_word and prev_word.group(1).lower() in _NOT_NAME_BEFORE:
+        return False
+    stripped = before.rstrip(" \t\"'“‘(")
+    if _LINE_START.match(before) or stripped.endswith((".", "!", "?")):
+        return after.startswith(",") or bool(_SPEECH_AFTER.match(after))
+    return True
+
 
 def ocr_ranges(text: str) -> list[tuple[int, int]]:
     """Where the OCR'd text is: from each "[OCR]" line to the next page break or the end."""
@@ -370,6 +434,7 @@ class Engine:
 
         if self.profile.redact_possessive_names:
             candidates.extend(self._possessive_names(text, candidates, is_name))
+        candidates.extend(self._word_names(text))
 
         # OCR'd text: labelled form fields, and names.txt names the OCR misspelled.
         ocr = ocr_ranges(text)
@@ -483,6 +548,20 @@ class Engine:
                     continue
                 seen.add((a, b))
                 out.append(Span(a, b, "PERSON", "possessive in a name", ident_for("PERSON", word), priority=P_PERSON))
+        return out
+
+    def _word_names(self, text: str) -> list[Span]:
+        """First names that are also ordinary words, where they sit in a name position.
+
+        Treated like any model detection afterwards: the keep list, citations and
+        names.txt still win.
+        """
+        out = []
+        for m in _WORD_NAME_RE.finditer(text):
+            word = m.group(0)
+            if word.lower() in WORD_NAMES and _word_name_position(text, m.start(), m.end()):
+                out.append(Span(m.start(), m.end(), "PERSON", "first name that is also a word",
+                                ident_for("PERSON", word), priority=P_PERSON))
         return out
 
     def _protected_spans(self, text: str) -> list[tuple[int, int, str]]:
@@ -622,6 +701,14 @@ class Engine:
                     b = offset + run[-1].idx + len(run[-1].text)
                     misses.append((a, b, text[a:b], reason(a, b, any(t.pos_ == "PROPN" for t in run))))
                     run = []
+        # A name-like ordinary word alone on a line ("Grace" in a contact list) is not
+        # redacted, since it can't be told from a heading, but it is listed.
+        for m in _WORD_NAME_RE.finditer(text):
+            a, b = m.span()
+            if (m.group(0).lower() in WORD_NAMES and _word_name_position(text, a, b) is None
+                    and not is_covered(a, b) and not self.on_keep_list(m.group(0))
+                    and not any(_overlaps(a, b, x[0], x[1]) for x in misses)):
+                misses.append((a, b, m.group(0), "a first name that is also an ordinary word, alone on a line"))
         # spaCy often calls a bare number a DATE, so policy-kept spans don't explain numbers.
         numbers_covered = [(s.start, s.end) for s in result.spans]
         numbers_covered += [(k.start, k.end) for k in result.kept if not k.reason.startswith("policy")]

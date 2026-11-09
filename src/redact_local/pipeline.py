@@ -264,11 +264,12 @@ def _link_people(registry: Registry, spans) -> None:
                 registry.link(ident, next(iter(matches)))
 
 
-def _suggest_people(results: list[FileResult]) -> list[names.Suggestion]:
+def _suggest_people(results: list[FileResult], ordinary: set[str] = frozenset()) -> list[names.Suggestion]:
     """One suggestion per person the model found (not names.txt), after placeholders are set.
 
     Mentions that share a placeholder are one person ("Quentin" linked to "Quentin
-    Fakerton"); the suggestion uses the fullest, most frequent spelling.
+    Fakerton"); the suggestion uses the fullest, most frequent spelling. Form labels and
+    code identifiers aren't suggested (see names.clean_suggestion); they stay redacted.
     """
     groups: dict[str, tuple[Counter, set, list]] = {}
     for fr in results:
@@ -276,7 +277,7 @@ def _suggest_people(results: list[FileResult]) -> list[names.Suggestion]:
             for s in a.spans:
                 if s.category != "PERSON" or s.detector.startswith("names.txt") or not s.placeholder:
                     continue
-                value = names.clean_suggestion(a.text[s.start:s.end])
+                value = names.clean_suggestion(a.text[s.start:s.end], ordinary)
                 forms, files, count = groups.setdefault(s.placeholder, (Counter(), set(), [0]))
                 count[0] += 1
                 files.add(fr.source)
@@ -391,7 +392,7 @@ def _run(matter, scope, private, out_dir, log_path, profile_name, config, sugges
     suggested, suggest_failed = 0, False
     if suggest:
         try:
-            suggested = names.append_suggestions(names_path, _suggest_people(results), profile.name)
+            suggested = names.append_suggestions(names_path, _suggest_people(results, engine.english | engine.common), profile.name)
         except (OSError, UnicodeDecodeError):
             suggest_failed = True
             log.exception("could not add suggestions to names.txt")

@@ -218,6 +218,42 @@ def test_image_ocr_is_marked_as_ocr(tmp_path):
     assert ex.text.startswith("[OCR]\n")
 
 
+def test_first_names_that_are_ordinary_words_are_redacted_where_names_go():
+    engine = _engine()
+    cases = {
+        "Hi Will,\nThanks for the update on the lease.": "Will",
+        "Thanks for the update.\n\nBest,\nHope": "Hope",
+        "> Thanks,\n> Mark": "Mark",
+        "From: Will\nSubject: lease": "Will",
+        "Dear Grace,\nPlease call me.": "Grace",
+        "Will, please send the lease.": "Will",
+        "The lease is late. Hope wrote back today.": "Hope",
+        "I met Robert Fakename. Bill and Will said they would sign.": "Will",
+        "I spoke with Joy about the deposit.": "Joy",
+    }
+    for text, name in cases.items():
+        assert name in _redacted(engine, text), text
+
+
+def test_the_same_words_used_as_words_are_left_alone_and_not_listed():
+    engine = _engine()
+    text = ("Will you send it? Hope this helps.\n"
+            "The Bill of Sale and the Last Will and Testament were signed. Grant County filed.\n"
+            "A Grant Deed was recorded for the Dean of Students. We will mark the bill and grant the motion.")
+    a = engine.analyze(text)
+    words = {"Will", "Hope", "Bill", "Grant", "Dean"}
+    assert not words & {text[s.start:s.end] for s in a.spans}
+    # "Dean" is still listed: a capitalized proper noun mid-sentence always is.
+    assert not (words - {"Dean"}) & {m[2] for m in a.misses}
+
+
+def test_a_name_like_word_alone_on_a_line_is_redacted_or_listed():
+    engine = _engine()
+    text = "Contacts\nGrace\n\nNotes follow below."
+    a = engine.analyze(text)
+    assert "Grace" in {text[s.start:s.end] for s in a.spans} | {m[2] for m in a.misses}
+
+
 def test_unknown_capitalized_word_is_redacted_or_listed_as_a_miss(matter):
     text = "Yesterday Xylophrax Quabbentine phoned. The account id is 99817264 and it was Blorptastic."
     out, result = _letter_output(matter, text=text)

@@ -76,6 +76,9 @@ Community Standards
 DMCA
 Digital Millennium Copyright Act
 
+# --- Network terms the model sometimes mistakes for names ---
+Deep Packet Inspection
+
 # --- Civil-liberties and legal-aid organizations ---
 EFF
 Electronic Frontier Foundation
@@ -194,6 +197,12 @@ Kitsap County
 Whatcom County
 Yakima County
 Benton County
+Grant County
+
+# --- Document titles that contain a first name (Will, Bill, Grant) ---
+Last Will and Testament
+Bill of Sale
+Grant Deed
 
 # --- Party labels the model sometimes mistakes for names ---
 Plaintiff

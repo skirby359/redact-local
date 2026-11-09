@@ -191,6 +191,15 @@ notes (`Trans 6 hrs`) a person. Mark the suggestion `Dexron VI => KEEP`: the nex
 adds it to this matter's keep list, so it stays in the output, and it isn't suggested
 again. (Leaving it commented out keeps it redacted.)
 
+Some mistakes are never suggested at all, so the list you check is mostly people:
+- form and header labels (`Email`, `Full Name`, `Phone:`)
+- code names built from ordinary words (`IsChecked`, `UseLayoutRounding`)
+
+Real names with an inner capital still are (`McDonald`, `DeShawn`, `JaVale`). The model
+may still redact these labels and code names, which is harmless; they just aren't put
+in front of you. Technical terms it trips on, like "Deep Packet Inspection", go in
+`config\keep.txt` so they stay in the output.
+
 ### Setting roles by placeholder
 
 ```
@@ -255,6 +264,25 @@ and folder names, which have no sentence around them, any capitalized possessive
 (`Jane's truck invoice`). Ordinary words (`Driver's`, `Children's`, `Owner's`) and
 keep-list terms are left alone. A business named after someone without a possessive
 ("Example Auto") is still kept: add the person to `names.txt`.
+
+**First names that are also ordinary words** (Will, Hope, Grace, Mark, Bill, Joy...):
+the model often reads them as the word, and "Possible misses" skips ordinary words. So
+they get their own rules, in every profile.
+
+They are redacted where a name goes:
+- after a greeting or header label ("Hi Will,", "Dear Grace,", "From: Will");
+- alone on the line under a closing ("Best,\nHope");
+- capitalized mid-sentence ("Bill and Will said", "I spoke with Joy");
+- at the start of a sentence with a comma or a "said"-type verb after ("Will, please...",
+  "Hope wrote...").
+
+They are left alone where they're the word:
+- at a sentence start otherwise ("Will you...", "Hope this helps");
+- after "the/a/your/last..." ("the Bill of Sale", "Last Will and Testament");
+- before "of", a number, or a place or company word ("Grant County", "Rose Garden").
+
+Alone on a line with no closing above, one is listed as a possible miss. The word list is
+`WORD_NAMES` in `detect.py`. Lowercase ("hi will,") isn't caught.
 
 **Metadata is never read.** Only text goes to the output: PDF page text and OCR, image
 OCR, DOCX body, tables, headers and footers, and email headers and body. PDF document
@@ -377,6 +405,11 @@ venv, so lift it while updating packages).
 - spaCy misses some names, especially single unusual names, names in ALL CAPS, and names
   in UI text with no sentence around them. names.txt and the possible-misses list exist
   for this.
+- A first name that is also an ordinary word is caught only in the positions listed under
+  [What gets detected](#what-gets-detected). One at the very start of a sentence with
+  nothing name-like after it ("Hope is coming tomorrow") can be left in. So can one that
+  isn't on the `WORD_NAMES` list. Surnames that are ordinary words (Baker, Brown) have no
+  such rules. Put the person in names.txt: then every capitalized mention is matched.
 - Lowercase usernames on their own (`jexample` with no `@` or profile URL) aren't
   detected unless they're in names.txt.
 - OCR quality depends on the image. Low-contrast or tiny text can come out garbled, and a
