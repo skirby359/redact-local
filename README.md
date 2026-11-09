@@ -59,7 +59,7 @@ from the current folder.
 
 ```
 run → confirm the suggested names.txt → check review.html → fix the lists → rerun
-    → Claude reads the "redacted" folder → Claude drafts with placeholders → restore
+    → check → Claude reads the "redacted" folder → Claude drafts with placeholders → restore
 ```
 
 1. **Run** (or ask Claude to, via the skill):
@@ -81,12 +81,21 @@ run → confirm the suggested names.txt → check review.html → fix the lists 
 5. **Rerun.** Placeholders don't change between runs, so nothing you've already read goes
    stale. The lists carry over, so the next document of the same kind should need few or
    no fixes. That's the point: correcting is a one-time job per kind of document.
-6. **Tell Claude you've reviewed it.** Claude then reads `<matter>\redacted\`.
-7. **Claude drafts using the placeholders** (`[CLIENT]`, `[PERSON-2]`...), then you (or
+6. **Check before anyone reads it** (see [Check before reading](#check-before-reading)):
+   ```
+   redact-local check "C:\path\to\matter"
+   ```
+   It looks for names and identifiers the run left in the output and prints finding ids
+   and counts; the text is in `<matter>\_redact\check.txt`, for you. Fix what's real
+   (`adopt` adds a finding's word to that person's names.txt line) and rerun.
+7. **Tell Claude you've reviewed it.** Claude then reads `<matter>\redacted\`.
+8. **Claude drafts using the placeholders** (`[CLIENT]`, `[PERSON-2]`...), then you (or
    Claude) run `restore` to get the real-name version, which Claude doesn't open:
    ```
    redact-local restore "draft.md" --matter "C:\path\to\matter"
    ```
+   To file an original document as an exhibit, `exhibit` makes a court copy of it with
+   only GR 31(e) identifiers removed (see [Exhibits](#exhibits)).
 
 ## Folders
 
@@ -100,6 +109,9 @@ For a matter folder `X`:
 | `X\_redact\key.csv` | placeholder → original value (persistent) | you, and `restore` |
 | `X\_redact\review.html` | the review sheet (contains originals) | you |
 | `X\_redact\manifest.json`, `run.log` | bookkeeping; the log can hold file names and tracebacks | you |
+| `X\_redact\check.txt`, `check.json` | what `check` found, with the text (`adopt` reads the json) | you, and `adopt` |
+| `X\_redact\court\` | court copies of original documents made by `exhibit` (names stay) | you |
+| `X\_redact\restored\` | restored copies of drafts that sat in the output folder | you |
 | `X\redacted\` | one `.txt` per source file, plus `_summary.json` (counts only) | Claude, after you've reviewed |
 
 Output file names are redacted too (`Jane_Example notice.pdf` → `[CLIENT] notice.pdf.txt`),
@@ -228,10 +240,17 @@ valid, nothing is written. It prints counts and line numbers. Rerun to apply.
 | EMAIL, PHONE | Presidio (plus a US phone regex as a backstop) |
 | HANDLE | `@handles`; usernames in profile URLs (`github.com/<user>`, `x.com/<user>`, `linkedin.com/in/<user>`...) become `github.com/[HANDLE-1]`. Site pages like `github.com/settings` are left alone. |
 | SSN, DRIVER-LICENSE, CARD, IBAN, IP | Presidio (plus Washington's `WDL…` licence format) |
-| ADDRESS | custom regex for US street addresses and PO boxes (Presidio has none). City and state stay. |
+| ADDRESS | custom regex for US street addresses and PO boxes (Presidio has none), with a unit after the street in any case ("apartment 4B", "Apt 5", "#12"), and a ZIP+4 after a state ("WA 98105-4321"). City, state and five-digit ZIP stay. |
 | DOB | custom: a date next to "DOB", "date of birth", "born"... |
 | TICKET | custom: numbers after ticket / case / account / order / reference..., and `#1234567` |
-| VIN | custom: 17-character vehicle identification numbers that pass the check digit, or follow "VIN" |
+| VIN | custom: 17-character vehicle identification numbers that pass the check digit, or follow "VIN"; and a 13-18 character code beside a "VIN" label (same line or the next), which is how OCR garbles a VIN on a repair order |
+| PLATE | custom: a licence plate beside a "License plate", "Plate", "Tag" or "License No." label (on its line, or first on the next line when the label ends its line); not after "driver's" |
+
+**Email header display names**: in `From:`, `To:` and `Cc:` lines, a display name before an
+address (`"Example, Jane (J.)" <jane@x.com>`) is redacted whole as a person, because the
+model often takes only one half of a "Last, First" name. A display name with a business
+word (Inc, LLC, Law, Auto, Repair, Brake, Bank, Support, Notifications...) or made only of
+ordinary words is left to the other detectors.
 
 **OCR'd text** (photos, scanned pages) gets three more rules, because handwriting and
 photographed forms defeat exact matching:
@@ -306,12 +325,61 @@ strict** even though it's public record: never run voter files through `court-re
 - **Possible misses**: capitalized words and long numbers left in the output that
   aren't on a keep list or in the English word list (spaCy's lemmatizer tables, about
   83,000 words, plus `config/common-words.txt`). Most are harmless; look for people,
-  usernames and account numbers.
+  usernames and account numbers. They are listed in three groups, most likely first:
+  - **Likely**: right next to a redacted name (often the half nobody listed), or on an
+    email header, a name field or a signature line. Read every one.
+  - **Worth a look**: proper nouns no list explains, words the model called a place or a
+    business, long numbers.
+  - **Probably ordinary words** (collapsed): capitalized words the model didn't take for
+    names.
+
+  The run prints the count in each group, and `_summary.json` has them under
+  `possible_misses_by_level`.
 - **Redacted**: every distinct value with placeholder, category, count, detector and files.
 - **Kept**: values a detector flagged but a keep list, citation or title rule kept.
 - Keep-list terms found, and orgs/places/dates kept by policy (collapsed).
 - **Files**: how each was read (text layer, OCR pages, embedded images, attached files)
   and any failures.
+
+## Check before reading
+
+```
+redact-local check "C:\path\to\matter"
+```
+
+Run it after the last rerun and before anyone, Claude included, reads the output. It reads
+the output, `key.csv` and `names.txt` (the tool reads them; nothing is printed) and looks for:
+
+- **Known values**: a spelling the key holds, or an alias on any names.txt line
+  (commented-out suggestions too), still in the output. The run redacted it somewhere, so
+  finding it elsewhere is a miss.
+- **Words next to a person's placeholder**: a capitalized word right beside one
+  (`[PERSON-3], Jane`, `JANE' [PERSON-3]`), usually the half of a name nobody listed.
+- **Words of a person's name on their own**, capitalized.
+- **Identifier shapes**: the run's own pattern detectors run again over the output, plus
+  SSN and card numbers.
+- **names.txt problems**: one role on several lines (numbered as different people), a role
+  typed on a line that still starts with `#`, two lines from the same suggestion.
+
+Ordinary English words, keep-list terms and KEEP lines, form labels and citations are
+skipped. The console prints finding ids, placeholders, names.txt line numbers and counts;
+the text, file and line of each finding are in `_redact\check.txt`, for you. Exit code 5
+means something was found. Nothing found lowers the risk; it doesn't prove the output clean.
+
+```
+redact-local adopt "C:\path\to\matter" F4 F6
+```
+
+adds a finding's word to that person's names.txt line (making a commented-out line
+active), so a miss can be fixed without anyone typing the name. It works for findings tied
+to a person; it keeps a `names.txt.bak`. Rerun, then check again.
+
+```
+redact-local where "C:\path\to\matter" PERSON-26 CLIENT
+```
+
+prints the names.txt line each placeholder is on now. Line numbers move when `roles` merges
+lines, so look them up rather than reuse an old number.
 
 ### Check key.csv for look-alike variants
 
@@ -375,8 +443,33 @@ values were cut or withheld, and warns if a placeholder that isn't in the key is
 the text.
 
 This is for drafts written with placeholders (pleadings, declarations, letters). It is not
-a way to file exhibits: the `redacted` output is extracted text, not the document. File the
-original document, with any GR 31(e) identifiers removed from the original itself.
+a way to file exhibits: the `redacted` output is extracted text, not the document. For
+those, see Exhibits.
+
+## Exhibits
+
+```
+redact-local exhibit "C:\path\to\matter\repair order.pdf"
+```
+
+makes a court copy of an original document (PDF, or a `.jpg`, `.png`, `.tif` or `.bmp`
+image) with only GR 31(e) identifiers removed, by the same `[court_filing]` rules:
+SSNs and card/account numbers cut to their last four characters, driver's licence numbers
+withheld. Names and everything else stay, as in the filed original.
+
+- **What it looks for**: values in those categories that the matter's key already holds,
+  plus SSN, card (Luhn-checked), IBAN (checksum) and Washington driver's licence patterns.
+- **Where**: on a PDF page with a text layer, from the exact character positions; on a
+  scanned page or an image, from OCR lines (the value's share of the line, padded).
+- **How**: real redaction. Text under a box is removed and image pixels are blacked out.
+  Image copies are saved without the original's metadata (EXIF).
+- **Read back**: the copy is read again (text layer and OCR); anything hidden that can
+  still be read is reported, with exit code 5.
+
+The copy goes to `<matter>\_redact\court\<name> - court copy.<ext>`, since it still holds
+names. The console shows counts and page numbers, never the file name. **Look at every
+page before filing**: OCR can miss a value it misreads, and a value split across two lines
+isn't found.
 
 ## The network guard
 
@@ -424,6 +517,12 @@ venv, so lift it while updating packages).
 - PDF comments (sticky notes, comments on highlights) aren't extracted. Text boxes drawn on
   the page are.
 - DOCX: footnotes, comments and text boxes aren't extracted.
+- Licence plates are found only beside a label. A plate in a column of a form whose header
+  row lists several labels ("COLOR LICENSE NO. MILEAGE") can't be tied to its column.
+- Email display names: a person's name made of business words ("Rose Law") is left to the
+  model; a business name with no business word in it can be redacted as a person.
+- `exhibit` boxes on scanned pages are proportional estimates from OCR lines, padded; a
+  value OCR misreads isn't found at all. Check every page of a court copy.
 - English only.
 
 ## Tests
@@ -437,7 +536,8 @@ All fixtures are synthetic and generated in code (Quentin Fakerton, Marisol Test
 The suite covers names.txt roles and variants, the keep list, citations in both profiles,
 placeholder stability across files and reruns, redacted file names, OCR on a rendered PNG,
 PDF text layer and scanned-page fallback, files attached to PDFs (portfolios, paperclips,
-nesting, unreadable attachments), EML and DOCX, restore round trips (text and DOCX), the
+nesting, unreadable attachments), EML and DOCX, restore round trips (text and DOCX) and
+court copies, check / where / adopt, exhibits (text-layer PDF, scanned PDF, image), the
 network guard, and a check that the CLI's stdout and stderr never contain any fake name or
 value, including when a file fails.
 
@@ -449,12 +549,15 @@ src/redact_local/
   netguard.py     in-process network block
   extract.py      PDF / image / text / EML / DOCX → text
   detect.py       Presidio + spaCy + names.txt + regexes; keep list; citations; misses
-  patterns.py     custom regexes (handles, profile URLs, addresses, DOB, tickets)
+  patterns.py     custom regexes (handles, profile URLs, addresses, ZIP+4, DOB, tickets,
+                  VINs, plates, email display names)
   citations.py    citation spans (adapted from wa-cite-check)
-  names.py        names.txt parsing and matching
+  names.py        names.txt parsing and matching; roles, where, add_spellings
   placeholders.py key.csv
   review.py       review.html
-  restore.py      restore command
+  restore.py      restore command (and --court)
+  check.py        check command: what a run left in the output
+  exhibit.py      exhibit command: court copies of original documents
   pipeline.py     ties a run together
 config/           keep.txt, keep-court-records.txt, profiles.toml, common-words.txt
 skill/            SKILL.template.md (SKILL.md is generated by scripts/install_skill.py)
