@@ -29,12 +29,16 @@ score_threshold = 0.4
 #   DOB             dates next to "DOB", "date of birth", "born"
 #   TICKET          ticket, case, account, order... numbers, and #1234567
 #   VIN             vehicle identification numbers (linkable to the registered owner;
-#                   restore puts them back in anything you file)
+#                   restore puts them back in anything you file), including OCR-garbled
+#                   ones next to a "VIN" label
+#   PLATE           licence plates next to a "License plate", "Plate" or "Tag" label
+# ADDRESS also takes a unit number after the street ("apartment 4B") and a ZIP+4 after
+# a state ("WA 98105-4321"); the city, state and five-digit ZIP stay.
 # Also available, off by default: LOCATION, ORG, DATE, NRP.
 redact = [
   "PERSON", "EMAIL", "PHONE", "HANDLE",
   "SSN", "DRIVER-LICENSE", "CARD", "IBAN", "IP",
-  "ADDRESS", "DOB", "TICKET", "VIN",
+  "ADDRESS", "DOB", "TICKET", "VIN", "PLATE",
 ]
 
 # Keep lists to load, from this config folder. <matter>\_redact\keep.txt is

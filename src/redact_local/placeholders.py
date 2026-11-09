@@ -24,7 +24,7 @@ from pathlib import Path
 PREFIX = {
     "PERSON": "PERSON", "EMAIL": "EMAIL", "PHONE": "PHONE", "HANDLE": "HANDLE",
     "SSN": "SSN", "DRIVER-LICENSE": "DRIVER-LICENSE", "CARD": "CARD", "IBAN": "IBAN",
-    "IP": "IP", "ADDRESS": "ADDRESS", "DOB": "DOB", "TICKET": "TICKET", "VIN": "VIN",
+    "IP": "IP", "ADDRESS": "ADDRESS", "DOB": "DOB", "TICKET": "TICKET", "VIN": "VIN", "PLATE": "PLATE",
     "LOCATION": "PLACE", "ORG": "ORG", "DATE": "DATE", "NRP": "GROUP",
 }
 FIELDS = ["placeholder", "category", "value", "ident", "primary"]

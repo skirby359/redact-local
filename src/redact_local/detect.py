@@ -87,6 +87,14 @@ WORD_NAMES = frozenset("""
     wade warren will willow woody wren
 """.split())
 _WORD_NAME_RE = re.compile(r"(?<![^\W\d_])[A-Z][a-z]+(?![^\W\d_])")
+# Words that make an email display name a business, not a person ("Example Auto Repair").
+_BUSINESS_WORDS = frozenset("""
+    inc llc pllc lllp llp ltd lp co corp corporation company group services service support team
+    notifications notification noreply reply news newsletter digital media law legal office offices
+    department dept auto automotive repair brake brakes bank credit union store shop customer care
+    sales billing info admin help desk center centre clinic hospital school university college
+    county city state court clerk agency the of and
+""".split())
 # The word, not the name: "the Bill", "a Grant Deed", "Last Will and Testament".
 _NOT_NAME_BEFORE = {
     "the", "a", "an", "this", "that", "these", "those", "any", "each", "every", "no", "some",
@@ -212,7 +220,7 @@ def ident_for(category: str, value: str) -> str:
         return f"{category}|{digits}"
     if category == "HANDLE":
         return f"HANDLE|{v.lstrip('@＠').casefold()}"
-    if category in {"EMAIL", "IBAN", "IP", "TICKET", "DRIVER-LICENSE", "VIN"}:
+    if category in {"EMAIL", "IBAN", "IP", "TICKET", "DRIVER-LICENSE", "VIN", "PLATE"}:
         return category + "|" + re.sub(r"\s+", "", v).casefold()
     # Names and free text: ignore case, punctuation and spacing.
     return category + "|" + " ".join(re.findall(r"[^\W_]+", v.casefold()))
@@ -432,6 +440,13 @@ class Engine:
             for start, end, cat, name in detector(text):
                 candidates.append(Span(start, end, cat, name, ident_for(cat, text[start:end]), priority=P_STRUCT))
 
+        # A display name in an email header ('From: "Example, Jane (J.)" <jane@x.com>'), whole:
+        # the model often takes only one half of a "Last, First" name.
+        for start, end, raw in patterns.header_display_names(text):
+            if self._display_name_is_person(raw):
+                candidates.append(Span(start, end, "PERSON", "email header name", ident_for("PERSON", raw),
+                                       priority=P_PERSON))
+
         if self.profile.redact_possessive_names:
             candidates.extend(self._possessive_names(text, candidates, is_name))
         candidates.extend(self._word_names(text))
@@ -451,6 +466,15 @@ class Engine:
         return result
 
     # ── internals ──
+
+    def _display_name_is_person(self, raw: str) -> bool:
+        """Two to five name-like words, not all ordinary words, and none that marks a business."""
+        toks = [t for t in re.findall(r"[^\W\d_]+", raw) if len(t) > 1]
+        if not 2 <= len(toks) <= 5 or any(t.lower() in _BUSINESS_WORDS for t in toks):
+            return False
+        if self.on_keep_list(raw) or any(self.on_keep_list(t) for t in toks):
+            return False
+        return not all(self._ordinary(t) for t in toks)
 
     def _ordinary(self, word: str) -> bool:
         low = word.lower()

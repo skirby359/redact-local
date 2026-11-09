@@ -15,7 +15,7 @@ DEFAULT_CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 
 ALL_CATEGORIES = {
     "PERSON", "EMAIL", "PHONE", "HANDLE", "SSN", "DRIVER-LICENSE", "CARD",
-    "IBAN", "IP", "ADDRESS", "DOB", "TICKET", "VIN", "LOCATION", "ORG", "DATE", "NRP",
+    "IBAN", "IP", "ADDRESS", "DOB", "TICKET", "VIN", "PLATE", "LOCATION", "ORG", "DATE", "NRP",
 }
 NAME_VARIANTS = {"full", "last-first", "initial-last", "first", "last"}
 
