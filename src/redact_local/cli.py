@@ -115,7 +115,10 @@ def cmd_run(args) -> int:
     print(f"Redactions: {r['total']} ({r['distinct_values']} distinct)" + (f": {cats}" if cats else ""))
     print(f"Kept: {k['keep_list_occurrences']} keep-list occurrence(s), {k['kept_by_rule']} by rule, "
           f"{k['protected_citations']} protected citation span(s)")
-    print(f"Possible misses to check: {s['possible_misses']}")
+    lv = s.get("possible_misses_by_level") or {}
+    print(f"Possible misses to check: {s['possible_misses']}"
+          + (f" ({lv.get('likely', 0)} likely, {lv.get('check', 0)} worth a look, {lv.get('low', 0)} probably "
+             "ordinary words; the review sheet lists them in that order)" if s["possible_misses"] else ""))
     names_txt = result.private / "names.txt"
     found = _plural(result.names_suggested, "person", "people")
     uncomment = "  Uncomment the real ones (a role after => is optional), delete the rest, then rerun."

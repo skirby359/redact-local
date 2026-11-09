@@ -515,6 +515,7 @@ def _summary(profile, results: list[FileResult], skipped, registry: Registry, bl
     by_cat: Counter = Counter()
     distinct = set()
     keep_hits = kept = protected = misses = 0
+    miss_levels: Counter = Counter({level: 0 for level in ("likely", "check", "low")})
     for fr in ok:
         for a in [*fr.name_analyses, fr.analysis]:
             for s in a.spans:
@@ -524,6 +525,7 @@ def _summary(profile, results: list[FileResult], skipped, registry: Registry, bl
             kept += sum(1 for k in a.kept if not k.reason.startswith("policy"))
             protected += len(a.protected)
             misses += len(a.misses)
+            miss_levels.update(m[4] for m in a.misses)
     return {
         "tool": "redact-local",
         "version": __version__,
@@ -556,5 +558,8 @@ def _summary(profile, results: list[FileResult], skipped, registry: Registry, bl
         },
         "kept": {"keep_list_occurrences": keep_hits, "kept_by_rule": kept, "protected_citations": protected},
         "possible_misses": misses,
+        # likely: next to a redacted name, or on a header, name-field or signature line;
+        # check: proper nouns, places/businesses the model named, long numbers; low: the rest.
+        "possible_misses_by_level": dict(miss_levels),
         "network_attempts_blocked": len(blocked),
     }

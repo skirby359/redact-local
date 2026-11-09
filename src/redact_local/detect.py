@@ -206,7 +206,7 @@ class Analysis:
     kept: list[Kept] = field(default_factory=list)
     keep_hits: list[tuple[int, int, str]] = field(default_factory=list)
     protected: list[tuple[int, int, str]] = field(default_factory=list)
-    misses: list[tuple[int, int, str, str]] = field(default_factory=list)
+    misses: list[tuple[int, int, str, str, str]] = field(default_factory=list)   # a, b, text, why, level
 
 
 # ── Identity keys: two mentions with the same key share a placeholder ──────
@@ -740,7 +740,37 @@ class Engine:
         for a, b in patterns.long_numbers(text):
             if not any(_overlaps(a, b, c0, c1) for c0, c1 in numbers_covered) and not re.fullmatch(r"\d{4}[-/ ]\d{1,2}[-/ ]\d{1,2}|\d{1,2}[-/ ]\d{1,2}[-/ ]\d{4}", text[a:b]):
                 misses.append((a, b, text[a:b], "long number left in"))
-        result.misses = misses
+        result.misses = [(a, b, v, why, _miss_level(text, a, b, why, result.spans)) for a, b, v, why in misses]
+
+
+# How likely a possible miss is to be personal data, so the review sheet can list the
+# likely ones first: hundreds of capitalized leftovers are too many to read one by one.
+MISS_LEVELS = ("likely", "check", "low")
+_NAME_LINE = re.compile(r"(?i)^[ \t>*]*(?:from|to|cc|bcc|sender|reply-to|attn|name|customer|signed)\b")
+_PRONOUN_LINE = re.compile(r"(?i)\b(?:she|he|they)\b\W{0,4}\b(?:her|him|them)\b")
+_BESIDE = re.compile(r"[ \t,'’\"(]{0,3}")
+
+
+def _miss_level(text: str, a: int, b: int, why: str, spans: list[Span]) -> str:
+    """likely: right next to a redacted name (the half nobody listed), or on an email header,
+    a name field or a signature line. low: a word the model didn't take for a proper noun.
+    check: everything else (proper nouns, things the model called a place or a business,
+    long numbers)."""
+    for s in spans:
+        if s.category not in {"PERSON", "NAME"} or s.kind not in {"", "name"}:
+            continue
+        if (s.end <= a and _BESIDE.fullmatch(text[s.end:a])) or (b <= s.start and _BESIDE.fullmatch(text[b:s.start])):
+            return "likely"
+    ls = text.rfind("\n", 0, a) + 1
+    le = text.find("\n", b)
+    le = len(text) if le < 0 else le
+    if _NAME_LINE.match(text[ls:le]):
+        return "likely"
+    prev = next((ln for ln in reversed(text[:ls].split("\n")) if ln.strip(" \t>")), "")
+    nxt = text[le + 1:].split("\n", 1)[0] if le < len(text) else ""
+    if _CLOSING.match(prev) or _PRONOUN_LINE.search(nxt):
+        return "likely"
+    return "low" if why.startswith("not in the English") else "check"
 
 
 def _trim(text: str, start: int, end: int) -> tuple[int, int]:

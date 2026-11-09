@@ -78,3 +78,36 @@ def test_business_display_names_are_left_alone():
     for header in ('From: Northside Example Brake <shop@example.com>', 'From: "Example Law Office" <x@example.com>',
                    "From: Notifications <no-reply@example.com>"):
         assert not any(d == "email header name" for _v, _c, d in _spans(header + "\n"))
+
+
+# ── Possible misses, most likely first ─────────────────────────────────────
+
+def test_possible_miss_levels():
+    from redact_local.detect import Span, _miss_level
+
+    text = "From: Zorbleflax Kqw\nThe Quentin Fakerton Wbxx file\nBest,\nYlvarra\nSome Vqzpl heading\n"
+    q = text.index("Quentin Fakerton")
+    name = Span(q, q + len("Quentin Fakerton"), "NAME", "names.txt", "x", kind="name")
+    email = Span(q, q + len("Quentin Fakerton"), "NAME", "names.txt", "x", kind="email")
+    at = lambda w: (text.index(w), text.index(w) + len(w))  # noqa: E731
+    assert _miss_level(text, *at("Wbxx"), "proper noun not on any list", [name]) == "likely"   # next to a name
+    assert _miss_level(text, *at("Wbxx"), "proper noun not on any list", [email]) == "check"   # not a name span
+    assert _miss_level(text, *at("Zorbleflax"), "not in the English word list", []) == "likely"  # header line
+    assert _miss_level(text, *at("Ylvarra"), "not in the English word list", []) == "likely"     # after a closing
+    assert _miss_level(text, *at("Vqzpl"), "not in the English word list", []) == "low"
+    assert _miss_level(text, *at("Vqzpl"), "proper noun not on any list", []) == "check"
+
+
+def test_summary_and_review_list_misses_by_level(matter):
+    import json
+
+    from conftest import LETTER, out_dir
+
+    (matter / "letter.txt").write_text(LETTER + "\nBest,\nYlvarra Qzm\n", encoding="utf-8")
+    run(matter)
+    s = json.loads((out_dir(matter) / "_summary.json").read_text(encoding="utf-8"))
+    levels = s["possible_misses_by_level"]
+    assert set(levels) == {"likely", "check", "low"} and sum(levels.values()) == s["possible_misses"]
+    review = (matter / "_redact" / "review.html").read_text(encoding="utf-8")
+    section = review.split("<h2>Possible misses", 1)[1].split("<h2>", 1)[0]
+    assert section.index("<h3>Likely") < section.index("<h3>Worth a look") < section.index("Probably ordinary words")

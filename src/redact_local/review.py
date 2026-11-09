@@ -45,13 +45,16 @@ def _table(headers: list[str], rows: list[list[str]], numeric: set[int] = frozen
     return "\n".join(out)
 
 
+_LEVEL_RANK = {"likely": 0, "check": 1, "low": 2}
+
+
 def write(path: Path, *, matter: Path, out_dir: Path, profile, files: list, skipped: list[str],
           names_info: dict, keep_count: int, totals: dict) -> None:
     redacted = defaultdict(lambda: {"count": 0, "files": set(), "detectors": set(), "category": "", "value": ""})
     kept = defaultdict(lambda: {"count": 0, "files": set(), "category": "", "reason": "", "value": ""})
     policy = defaultdict(lambda: {"count": 0, "files": set(), "category": "", "value": ""})
     keep_hits = defaultdict(lambda: {"count": 0, "files": set()})
-    misses = defaultdict(lambda: {"count": 0, "files": set(), "why": "", "value": ""})
+    misses = defaultdict(lambda: {"count": 0, "files": set(), "why": "", "value": "", "level": "low"})
 
     for f in files:
         if f.analysis is None:
@@ -79,18 +82,25 @@ def write(path: Path, *, matter: Path, out_dir: Path, profile, files: list, skip
             for _a, _b, term in a.keep_hits:
                 keep_hits[term]["count"] += 1
                 keep_hits[term]["files"].add(where)
-            for _a, _b, value, why in a.misses:
+            for _a, _b, value, why, level in a.misses:
                 key = " ".join(value.split()).casefold()
                 r = misses[key]
                 r["count"] += 1
                 r["files"].add(where)
-                r["why"] = why
+                # A value takes its most worrying level and the reason that goes with it.
+                if r["why"] == "" or _LEVEL_RANK[level] < _LEVEL_RANK[r["level"]]:
+                    r["why"], r["level"] = why, level
                 r["value"] = " ".join(value.split())
 
-    miss_rows = [
-        [_e(m["value"]), str(m["count"]), _where(m["files"]), _e(m["why"])]
-        for m in sorted(misses.values(), key=lambda m: (-m["count"], m["value"].casefold()))
-    ]
+    def miss_rows_at(level: str) -> list[list[str]]:
+        return [
+            [_e(m["value"]), str(m["count"]), _where(m["files"]), _e(m["why"])]
+            for m in sorted(misses.values(), key=lambda m: (-m["count"], m["value"].casefold()))
+            if m["level"] == level
+        ]
+
+    likely_rows, check_rows, low_rows = miss_rows_at("likely"), miss_rows_at("check"), miss_rows_at("low")
+    miss_rows = likely_rows + check_rows + low_rows
     red_rows = [
         [f"<span class=ph>[{_e(ph)}]</span>", _e(r["value"]), _e(r["category"]), str(r["count"]),
          _e(", ".join(sorted(r["detectors"]))), _where(r["files"])]
@@ -182,8 +192,18 @@ The lists carry over, so the next document of the same kind should need few or n
 
 <h2>Possible misses ({len(miss_rows)})</h2>
 <p class=small>Capitalized words and long numbers left in the output that aren't on a keep list or in
-the English word list. Most are harmless. Look for people, usernames and account numbers.</p>
-{_table(["Text left in", "Times", "Where", "Why listed"], miss_rows, {1})}
+the English word list. Most are harmless. Look for people, usernames and account numbers.
+They are listed from most to least likely to be personal data.</p>
+<h3>Likely ({len(likely_rows)})</h3>
+<p class=small>Right next to a redacted name (often the half nobody listed), or on an email header,
+a name field or a signature line. Read every one.</p>
+{_table(["Text left in", "Times", "Where", "Why listed"], likely_rows, {1})}
+<h3>Worth a look ({len(check_rows)})</h3>
+<p class=small>Proper nouns no list explains, words the model called a place or a business, and long numbers.</p>
+{_table(["Text left in", "Times", "Where", "Why listed"], check_rows, {1})}
+<details><summary>Probably ordinary words ({len(low_rows)})</summary>
+<p class=small>Capitalized words the model didn't take for names: headings, misspellings, OCR noise.</p>
+{_table(["Text left in", "Times", "Where", "Why listed"], low_rows, {1})}</details>
 
 <h2>Redacted ({len(red_rows)})</h2>
 {_table(["Placeholder", "Original", "Category", "Times", "Detected by", "Where"], red_rows, {3})}
