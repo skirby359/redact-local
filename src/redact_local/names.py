@@ -113,8 +113,21 @@ class NamesFile:
     keep: list[str] = field(default_factory=list)
 
 
+# Quote marks a name picks up when it is copied from an email header, a signature or OCR
+# text: "Example, Jane" in quotes, or "Jane' Example". Left in, the name only matched where
+# the same mark followed it, so "Example, Jane" in a header stayed. An apostrophe inside a
+# word is part of the name and stays (O'Brien, D'Angelo).
+_QUOTES = "'\"`´‘’‚‛“”„‟"
+
+
+def _strip_quotes(text: str) -> str:
+    """Quote marks around the alias and at either end of each word removed."""
+    words = (w.strip(_QUOTES) for w in text.strip().strip(_QUOTES).split())
+    return " ".join(w for w in words if w)
+
+
 def _classify(alias: str) -> Alias:
-    a = alias.strip()
+    a = alias.strip().strip(_QUOTES).strip()
     if _EMAIL.match(a):
         return Alias(a, "email")
     if _HANDLE.match(a):
@@ -124,7 +137,7 @@ def _classify(alias: str) -> Alias:
         return Alias("@" + m.group(1), "handle")
     if _PHONE.match(a) and sum(c.isdigit() for c in a) >= 7:
         return Alias(a, "phone")
-    return Alias(a, "name")
+    return Alias(_strip_quotes(a), "name")
 
 
 def parse(path: Path, existing: dict[str, str] | None = None) -> NamesFile:

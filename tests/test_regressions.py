@@ -284,3 +284,30 @@ def test_cli_handles_non_ascii_paths(tmp_path):
     proc = cli("run", str(m), "--config", str(CONFIG), cwd=tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert_no_secrets(proc.stdout + proc.stderr)
+
+
+# ── names.txt spellings copied with quote marks ────────────────────────────
+
+def test_names_txt_alias_with_a_stray_apostrophe_matches_every_form(matter):
+    # Regression: a full name copied from a signature kept its apostrophe ("Quentin' Fakerton"),
+    # so the first name only matched where an apostrophe followed it: the signature was
+    # redacted, but "Fakerton, Quentin" in the email header stayed in the output.
+    _names(matter, "Fakerton | Quentin' Fakerton\n")
+    (matter / "mail.txt").write_text(
+        'From: "Fakerton, Quentin (Q.)" <q.f@example.com>\nSee you then.\n\nQUENTIN\' FAKERTON\n',
+        encoding="utf-8")
+    run(matter)
+    out = _only_output(matter).lower()
+    assert "quentin" not in out and "fakerton" not in out
+
+
+def test_names_txt_quote_marks_are_dropped_but_inner_apostrophes_stay(tmp_path):
+    from redact_local import names
+
+    p = tmp_path / "names.txt"
+    p.write_text('"Fakerton, Quentin" | Quentin’ Fakerton | “Q. Fakerton”\n'
+                 "Marisol D'Testwell\n'qfakerton@example.com'\n", encoding="utf-8")
+    nf = names.parse(p)
+    assert [a.text for a in nf.entries[0].aliases] == ["Fakerton, Quentin", "Quentin Fakerton", "Q. Fakerton"]
+    assert [a.text for a in nf.entries[1].aliases] == ["Marisol D'Testwell"]
+    assert [(a.text, a.kind) for a in nf.entries[2].aliases] == [("qfakerton@example.com", "email")]
