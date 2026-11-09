@@ -93,6 +93,38 @@ def load_profile(name: str, cfg: Path) -> Profile:
     )
 
 
+@dataclass
+class CourtFiling:
+    """What ``restore --court`` does with each category (the [court_filing] table)."""
+    last4: frozenset[str]
+    withhold: frozenset[str]
+    withheld_text: str
+
+
+# Washington GR 31(e)(1): SSNs and financial account numbers only as their last four
+# digits; driver's license numbers left out. Used when profiles.toml has no [court_filing].
+COURT_FILING_DEFAULTS = {"last4": ["SSN", "CARD", "IBAN"], "withhold": ["DRIVER-LICENSE"],
+                         "withheld_text": "[REDACTED]"}
+
+
+def load_court_filing(cfg: Path) -> CourtFiling:
+    data = _read_toml(cfg / "profiles.toml").get("court_filing", {})
+    merged = {**COURT_FILING_DEFAULTS, **data}
+    last4 = frozenset(str(c).upper() for c in merged["last4"])
+    withhold = frozenset(str(c).upper() for c in merged["withhold"])
+    unknown = (last4 | withhold) - ALL_CATEGORIES - {"NAME"}
+    if unknown:
+        raise UsageError(f"profiles.toml [court_filing]: unknown categories: {', '.join(sorted(unknown))}.")
+    both = last4 & withhold
+    if both:
+        raise UsageError(f"profiles.toml [court_filing]: listed under both last4 and withhold: "
+                         f"{', '.join(sorted(both))}.")
+    text = str(merged["withheld_text"])
+    if not text.strip():
+        raise UsageError("profiles.toml [court_filing]: withheld_text must not be empty.")
+    return CourtFiling(last4, withhold, text)
+
+
 def read_list_file(path: Path) -> list[str]:
     """One entry per line; blank lines and lines starting with # are skipped."""
     if not path.is_file():

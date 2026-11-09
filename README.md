@@ -329,6 +329,27 @@ If the draft is inside the output folder (`<matter>\redacted\`, or an older
 so real names never land where Claude reads. `--matter` accepts the matter folder, its
 `_redact` folder or its output folder.
 
+### Court copies
+
+`restore <draft> --matter <folder> --court` writes `<draft> - court copy.<ext>` for
+filing. Names, contact details and everything else come back in full, but the categories
+in the `[court_filing]` table of `config/profiles.toml` are handled differently:
+
+| Setting | Default categories | In the court copy |
+|---|---|---|
+| `last4` | `SSN`, `CARD`, `IBAN` | every letter and digit but the last four becomes X: `XXX-XX-6012` |
+| `withhold` | `DRIVER-LICENSE` | replaced by `withheld_text` (`[REDACTED]`) |
+
+The defaults follow Washington GR 31(e)(1). Check the current rule, and any rule for your
+case type, before relying on them. `TICKET` also catches some account numbers; add it to
+`last4` if your draft cites a financial account that way. The console prints how many
+values were cut or withheld, and warns if a placeholder that isn't in the key is still in
+the text.
+
+This is for drafts written with placeholders (pleadings, declarations, letters). It is not
+a way to file exhibits: the `redacted` output is extracted text, not the document. File the
+original document, with any GR 31(e) identifiers removed from the original itself.
+
 ## The network guard
 
 Neither Presidio nor spaCy documents any telemetry, but the tool doesn't rely on that.

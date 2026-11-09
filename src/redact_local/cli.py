@@ -2,7 +2,7 @@
 
     redact-local run <path> [--profile client|court-records] [--suggest-names]
     redact-local roles <folder> PERSON-4=OWNER PERSON-9=KEEP ...
-    redact-local restore <draft> --matter <folder>
+    redact-local restore <draft> --matter <folder> [--court]
     redact-local profiles
 
 The console only ever shows counts and paths. While the work runs, anything a
@@ -164,7 +164,7 @@ def cmd_restore(args) -> int:
     log_path = key.parent / "run.log"
     with _quiet(log_path):
         try:
-            result = restore.restore(args.draft, args.matter)
+            result = restore.restore(args.draft, args.matter, court=args.court, config=args.config)
         except SafeError:
             raise
         except BaseException:
@@ -172,6 +172,12 @@ def cmd_restore(args) -> int:
             raise
     print(f"Restored {_plural(result.replaced, 'placeholder')} ({result.distinct} distinct); "
           f"{result.unknown} not in the key, left as they were.")
+    if args.court:
+        print(f"Court copy: {result.masked} cut to the last four characters, {result.withheld} withheld "
+              "(rules: [court_filing] in profiles.toml).")
+        if result.unknown:
+            print(f"  WARNING: {_plural(result.unknown, 'placeholder')} not in the key "
+                  f"{'is' if result.unknown == 1 else 'are'} still in the text. Fix the draft before filing.")
     print(f"Output: {result.output}")
     print("  It contains the real values. Open it yourself; Claude must not read it.")
     return EXIT_OK
@@ -241,6 +247,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("restore", help="Swap placeholders in a draft back to the real values.")
     s.add_argument("draft", help="Draft written with placeholders (.txt, .md or .docx).")
     s.add_argument("--matter", required=True, help="The matter folder the placeholders came from.")
+    s.add_argument("--court", action="store_true",
+                   help="Write a court copy for filing: SSNs and account numbers cut to the last four, "
+                        "driver's license numbers withheld (set in [court_filing] in profiles.toml).")
+    s.add_argument("--config", default=None, help="Config folder (default: the repo's config/).")
     s.set_defaults(func=cmd_restore)
 
     ro = sub.add_parser(

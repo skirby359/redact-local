@@ -33,7 +33,7 @@ Follow them exactly.
    it, and don't read it: it's no longer updated.
 5. **Write drafts with the placeholders** (`[CLIENT]`, `[PERSON-2]`, `[EMAIL-1]`...).
    Use `restore` to make the real-name version, and **never open the restored file**
-   (`* - restored.*`, or anything in `_redact\restored\`).
+   (`* - restored.*`, `* - court copy.*`, or anything in `_redact\restored\`).
 6. **If the user starts typing real names into chat** to add to the list, suggest they
    edit `<folder>\_redact\names.txt` directly instead, so the names stay off the model.
 7. If a task can't be done without seeing the originals, stop and say so.
@@ -49,8 +49,15 @@ The CLI runs from its own venv, with `-I` so nothing in the current folder is im
 "{{PYTHON}}" -I -m redact_local run "<folder>" --suggest-names
 "{{PYTHON}}" -I -m redact_local roles "<folder>" PERSON-4=OWNER PERSON-2=SHOP PERSON-9=KEEP
 "{{PYTHON}}" -I -m redact_local restore "<draft.md|.txt|.docx>" --matter "<folder>"
+"{{PYTHON}}" -I -m redact_local restore "<draft.md|.txt|.docx>" --matter "<folder>" --court
 "{{PYTHON}}" -I -m redact_local profiles
 ```
+
+`restore --court` makes a copy for filing (`<draft> - court copy.<ext>`): names come
+back, but SSNs and card/account numbers are cut to their last four and driver's license
+numbers are withheld (Washington GR 31(e)(1); set in `[court_filing]` in profiles.toml).
+Relay its counts, and if it prints a WARNING about placeholders still in the text, tell
+the user before they file. It's for drafts only; exhibits are filed from the originals.
 
 Exit codes: 0 ok · 1 error · 2 bad arguments · 3 a network attempt was blocked (treat
 the run as failed and tell the user) · 4 some files, or files attached to a PDF, couldn't

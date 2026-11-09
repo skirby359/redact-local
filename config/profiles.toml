@@ -84,3 +84,19 @@ keep_files = ["keep.txt", "keep-court-records.txt"]
 protect_citation_names = true
 protect_case_numbers = true
 keep_titled_officials = true
+
+
+# What `restore --court` does with each category, for a draft you will file.
+# Everything not listed here is restored in full. Categories are the ones in
+# [defaults] redact, plus NAME (entries from names.txt).
+#   last4     every letter and digit but the last four becomes X: XXX-XX-6012
+#   withhold  replaced by withheld_text
+# The defaults follow Washington GR 31(e)(1): Social Security and financial
+# account numbers only as their last four digits; driver's license numbers left
+# out. Check the current rule, and any rule for your case type (GR 22 in family
+# law, for example), before relying on this. TICKET also catches some account
+# numbers; add it to last4 if your draft cites a financial account that way.
+[court_filing]
+last4 = ["SSN", "CARD", "IBAN"]
+withhold = ["DRIVER-LICENSE"]
+withheld_text = "[REDACTED]"

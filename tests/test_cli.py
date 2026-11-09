@@ -39,6 +39,17 @@ def test_run_and_restore_print_counts_and_paths_only(matter, tmp_path):
     assert "Restored 2 placeholders" in proc.stdout
     assert CLIENT in (tmp_path / "draft - restored.txt").read_text(encoding="utf-8")
 
+    # A court copy: counts only on the console, and a warning for a placeholder left behind.
+    draft.write_text("Dear [CLIENT], SSN [SSN-1]. [NOPE-9].", encoding="utf-8")
+    proc = cli("restore", str(draft), "--matter", str(matter), "--court", cwd=tmp_path)
+    console = proc.stdout + proc.stderr
+    assert proc.returncode == 0, console
+    assert_no_secrets(console)
+    assert "Court copy: 1 cut to the last four characters, 0 withheld" in proc.stdout
+    assert "WARNING: 1 placeholder not in the key is still in the text" in proc.stdout
+    court = (tmp_path / "draft - court copy.txt").read_text(encoding="utf-8")
+    assert CLIENT in court and "XXX-XX-6012" in court and "219-44-6012" not in court
+
 
 def test_unreadable_attachment_makes_the_run_partial(matter, tmp_path):
     # Exit 4 tells the skill some content is missing; a locked attachment is missing content.
