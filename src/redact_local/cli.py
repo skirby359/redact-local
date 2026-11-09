@@ -6,6 +6,7 @@
     redact-local check <folder>
     redact-local where <folder> PERSON-4 ...
     redact-local adopt <folder> F3 F7 ...
+    redact-local exhibit <original.pdf|image> [--matter <folder>]
     redact-local profiles
 
 The console only ever shows counts and paths. While the work runs, anything a
@@ -342,6 +343,41 @@ def cmd_adopt(args) -> int:
     return EXIT_OK
 
 
+def cmd_exhibit(args) -> int:
+    from redact_local import exhibit, pipeline
+
+    matter, _scope = pipeline.matter_paths(args.matter or args.original)
+    private = matter / pipeline.PRIVATE
+    log_path = private / "run.log"
+    with _quiet(log_path if private.is_dir() else None):
+        try:
+            result = exhibit.make_exhibit(args.original, args.matter, args.config)
+        except SafeError:
+            raise
+        except BaseException:
+            _log_traceback(log_path)
+            raise
+    print(f"redact-local {build()} | exhibit (court copy of an original document)")
+    if result.masked or result.withheld:
+        pages = ", ".join(map(str, result.pages))
+        print(f"Court copy: {result.masked} cut to the last four characters, {result.withheld} withheld, "
+              f"on page(s) {pages}")
+        print(f"  Found by: {result.by_text} in the text layer, {result.by_ocr} by OCR "
+              f"({_plural(result.ocr_pages, 'page')} OCR'd). Rules: [court_filing] in profiles.toml.")
+    else:
+        print("Court copy: nothing found to remove (no SSN, account or driver's licence number). "
+              "Contents unchanged.")
+    if result.still_readable:
+        print(f"WARNING: {_plural(result.still_readable, 'hidden value')} can still be read in the copy. "
+              "Don't file it until you have checked it.")
+    elif result.masked or result.withheld:
+        print("Read back after redaction: nothing that was hidden can still be read.")
+    print(f"Output folder (private): {result.output.parent}")
+    print("  The copy has the original's name with ' - court copy' added. Open it yourself; Claude must not read it.")
+    print("  Look at every page before filing: OCR can miss a value it misreads.")
+    return EXIT_FINDINGS if result.still_readable else EXIT_OK
+
+
 def cmd_profiles(args) -> int:
     from redact_local.config import config_dir, list_profiles
 
@@ -395,6 +431,13 @@ def build_parser() -> argparse.ArgumentParser:
     ad.add_argument("matter", help="The matter folder.")
     ad.add_argument("ids", nargs="+", metavar="ID", help="Finding ids from the last check, e.g. F3 F7.")
     ad.set_defaults(func=cmd_adopt)
+
+    ex = sub.add_parser("exhibit", help="Court copy of an original PDF or image: SSNs and account numbers cut to "
+                                        "the last four, driver's licence numbers withheld, nothing else changed.")
+    ex.add_argument("original", help="The original document (.pdf, .jpg, .png, .tif, .bmp) inside the matter.")
+    ex.add_argument("--matter", default=None, help="The matter folder (default: the one the file is in).")
+    ex.add_argument("--config", default=None, help="Config folder (default: the repo's config/).")
+    ex.set_defaults(func=cmd_exhibit)
 
     pr = sub.add_parser("profiles", help="List the available profiles.")
     pr.add_argument("--config", default=None)
