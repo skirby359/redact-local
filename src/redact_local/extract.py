@@ -38,6 +38,11 @@ MIN_TEXT_CHARS = 25        # fewer characters than this on a PDF page -> OCR it
 PAGE_DPI = 300
 REGION_DPI = 200
 REGION_MIN_SHARE = 0.10    # OCR embedded images covering >= 10% of a text page
+# Longest side, in pixels, of anything handed to OCR. Phone-scanner apps can size each PDF
+# page from the photo's pixels at 72 per inch (a 35 x 46 in "page"): at 300 DPI that is a
+# 145 MP render, and the OCR model fails to allocate memory. Letter and legal pages at
+# 300 DPI fit under this, so ordinary documents render exactly as before.
+MAX_OCR_SIDE = 4200
 MAX_ATTACHMENT_DEPTH = 3   # a portfolio inside a portfolio inside a portfolio
 MAX_ATTACHMENTS = 1000     # per file on disk, all levels: nested copies can multiply from a few KB
 SNIFF_MAX_BYTES = 64 * 2**20   # an attached file with no usable extension is only unpacked to check its type below this
@@ -104,7 +109,8 @@ def ocr_array(rgb) -> str:
 
 
 def _pil_to_rgb(img):
-    """RGB array; transparent areas become white (black would hide dark text from OCR)."""
+    """RGB array; transparent areas become white (black would hide dark text from OCR).
+    Shrunk to fit MAX_OCR_SIDE."""
     import numpy as np
     from PIL import Image
 
@@ -112,7 +118,18 @@ def _pil_to_rgb(img):
         rgba = img.convert("RGBA")
         background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
         img = Image.alpha_composite(background, rgba)
-    return np.array(img.convert("RGB"))
+    rgb = img.convert("RGB")
+    if max(rgb.size) > MAX_OCR_SIDE:
+        rgb.thumbnail((MAX_OCR_SIDE, MAX_OCR_SIDE), Image.Resampling.LANCZOS)
+    return np.array(rgb)
+
+
+def _ocr_dpi(rect, dpi: int) -> int:
+    """``dpi``, lowered if needed so a render of ``rect`` fits MAX_OCR_SIDE."""
+    longest = max(abs(rect.width), abs(rect.height))
+    if longest <= 0:
+        return dpi
+    return max(1, min(dpi, int(72 * MAX_OCR_SIDE / longest)))
 
 
 def _pixmap_to_rgb(pix):
@@ -182,13 +199,14 @@ def _pdf(src: Path | bytes, depth: int = 0, budget: list[int] | None = None) -> 
                         rect = rect & page.rect
                         if rect.is_empty or abs(rect.width * rect.height) / page_area < REGION_MIN_SHARE:
                             continue
-                        found = ocr_array(_pixmap_to_rgb(page.get_pixmap(dpi=REGION_DPI, clip=rect, alpha=False)))
+                        found = ocr_array(_pixmap_to_rgb(
+                            page.get_pixmap(dpi=_ocr_dpi(rect, REGION_DPI), clip=rect, alpha=False)))
                         if found.strip():
                             ex.ocr_regions += 1
                             chunk.append("[text in embedded image]\n" + found)
             else:
                 ex.ocr_pages += 1
-                found = ocr_array(_pixmap_to_rgb(page.get_pixmap(dpi=PAGE_DPI, alpha=False)))
+                found = ocr_array(_pixmap_to_rgb(page.get_pixmap(dpi=_ocr_dpi(page.rect, PAGE_DPI), alpha=False)))
                 chunk.append("[OCR]\n" + found if found.strip() else "[OCR found no text on this page]")
             parts.append("\n".join(chunk))
         try:

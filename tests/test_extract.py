@@ -40,6 +40,38 @@ def test_pdf_output_is_redacted(matter, tmp_path):
     assert result.summary["pages"]["pdf_ocr"] == 1
 
 
+def test_photo_sized_pdf_page_is_ocrd_within_the_size_limit(tmp_path, monkeypatch):
+    # Regression: a phone-scanner app sized each page from the photo's pixels at 72 per inch
+    # (about 35 x 46 in). The 300 DPI render was 145 MP and OCR failed with "bad allocation".
+    import pymupdf
+
+    shapes = []
+    real = extract.ocr_array
+    monkeypatch.setattr(extract, "ocr_array", lambda rgb: (shapes.append(rgb.shape), real(rgb))[1])
+    scan = render_png(tmp_path / "scan.png", ["Scanned page", f"Signed by {CLIENT}"], size=96)
+    doc = pymupdf.open()
+    page = doc.new_page(width=2550, height=3300)
+    page.insert_image(page.rect, filename=str(scan))
+    pdf = tmp_path / "phone-scan.pdf"
+    doc.save(str(pdf))
+    doc.close()
+    ex = extract.extract(pdf)
+    assert ex.ocr_pages == 1 and len(shapes) == 1
+    assert max(shapes[0][:2]) <= extract.MAX_OCR_SIDE
+    assert "signed by" in ex.text.lower() and "fakerton" in ex.text.lower()
+
+
+def test_ocr_size_limit_leaves_ordinary_pages_alone():
+    import pymupdf
+    from PIL import Image
+
+    assert extract._ocr_dpi(pymupdf.Rect(0, 0, 612, 792), 300) == 300     # letter
+    assert extract._ocr_dpi(pymupdf.Rect(0, 0, 612, 1008), 300) == 300    # legal
+    assert extract._ocr_dpi(pymupdf.Rect(0, 0, 2550, 3300), 300) < 100    # photo-sized page
+    assert max(extract._pil_to_rgb(Image.new("RGB", (9000, 3000), "white")).shape[:2]) == extract.MAX_OCR_SIDE
+    assert extract._pil_to_rgb(Image.new("RGB", (1200, 800), "white")).shape[:2] == (800, 1200)
+
+
 def test_pdf_portfolio_reads_embedded_files(tmp_path):
     # Regression: a portfolio's only page is a cover sheet, so its documents were lost.
     ex = extract.extract(make_portfolio(tmp_path / "portfolio.pdf", tmp_path))
