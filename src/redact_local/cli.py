@@ -3,6 +3,9 @@
     redact-local run <path> [--profile client|court-records] [--suggest-names]
     redact-local roles <folder> PERSON-4=OWNER PERSON-9=KEEP ...
     redact-local restore <draft> --matter <folder> [--court]
+    redact-local check <folder>
+    redact-local where <folder> PERSON-4 ...
+    redact-local adopt <folder> F3 F7 ...
     redact-local profiles
 
 The console only ever shows counts and paths. While the work runs, anything a
@@ -20,6 +23,7 @@ netguard.install()
 import argparse  # noqa: E402
 import contextlib  # noqa: E402
 import os  # noqa: E402
+import re  # noqa: E402
 import sys  # noqa: E402
 import traceback  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -27,7 +31,7 @@ from pathlib import Path  # noqa: E402
 from redact_local import build  # noqa: E402
 from redact_local.errors import SafeError  # noqa: E402
 
-EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_NETWORK, EXIT_PARTIAL = 0, 1, 2, 3, 4
+EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_NETWORK, EXIT_PARTIAL, EXIT_FINDINGS = 0, 1, 2, 3, 4, 5
 
 
 @contextlib.contextmanager
@@ -147,6 +151,7 @@ def cmd_run(args) -> int:
     print(f"Output folder: {result.out_dir}")
     print(f"Review sheet:  {result.review}")
     print("  The review sheet contains the original values. Open it yourself; Claude must not read it.")
+    print(f'Before anyone reads the output: redact-local check "{result.matter}"')
     if result.legacy_out:
         print(f"Older output folder (before 0.2.0), no longer updated: {result.legacy_out}")
         print("  Delete it once you no longer need it, so nobody reads stale output.")
@@ -217,8 +222,120 @@ def cmd_roles(args) -> int:
           + (f"; {_plural(result.added, 'person', 'people')} added from the key" if result.added else ""))
     print(f"  Backup of the previous names.txt: {names_path.with_suffix('.txt.bak')}")
     print(f"  Changed line(s): {', '.join(map(str, result.lines)) or 'none'}")
+    if result.merged:
+        print("  Lines below a merge have moved up. Use 'redact-local where' for a placeholder's line now.")
     print(f"  File: {names_path}")
     print(f'Rerun to apply: redact-local run "{matter}"')
+    return EXIT_OK
+
+
+def cmd_check(args) -> int:
+    from redact_local import check, pipeline
+
+    matter, _scope = pipeline.matter_paths(args.matter)
+    log_path = matter / pipeline.PRIVATE / "run.log"
+    with _quiet(log_path if log_path.parent.is_dir() else None):
+        try:
+            result = check.run_check(args.matter, args.config)
+        except SafeError:
+            raise
+        except BaseException:
+            _log_traceback(log_path)
+            raise
+    print(f"redact-local {build()} | check")
+    print(f"Output files checked: {result.files}")
+    labels = [("known", "Known values still in the output"), ("neighbour", "Capitalized words next to a person's placeholder"),
+              ("word", "Words of a person's name on their own"), ("shape", "Identifier shapes"),
+              ("names", "names.txt problems")]
+    for kind, label in labels:
+        fs = result.of(kind)
+        extra = ""
+        if kind == "shape" and fs:
+            cats: dict[str, int] = {}
+            for f in fs:
+                cats[f.category] = cats.get(f.category, 0) + 1
+            extra = " (" + ", ".join(f"{c} {n}" for c, n in sorted(cats.items())) + ")"
+        print(f"{label}: {len(fs)}{extra}")
+    print(f"Skipped as ordinary words, keep-list terms or form labels: {_plural(result.skipped_values, 'value')}")
+    if not result.findings:
+        print("Nothing found. That lowers the risk; it doesn't prove the output is clean.")
+    else:
+        print("Findings (ids and places only; the text is in the private report):")
+        for f in result.findings[:60]:
+            if f.kind == "names":
+                print(f"  {f.id:<4} {f.note}")
+                continue
+            who = f" [{f.placeholder}]" if f.placeholder else ""
+            line = f", names.txt line {f.names_line}" if f.names_line else ""
+            cat = f" {f.category}" if f.kind == "shape" else ""
+            print(f"  {f.id:<4} {check._KIND_TEXT[f.kind]}{cat}{who}{line}: "
+                  f"{_plural(len(f.hits), 'place')} in {_plural(f.files, 'file')}")
+        if len(result.findings) > 60:
+            print(f"  ... and {len(result.findings) - 60} more in the report.")
+    print(f"Report: {result.report}")
+    print("  It contains the original values. Open it yourself; Claude must not read it.")
+    if any(f.kind in {"known", "word", "neighbour"} and f.placeholder for f in result.findings):
+        print(f'Add a finding\'s word to that person\'s names.txt line: redact-local adopt "{result.matter}" <id> ...')
+    return EXIT_FINDINGS if result.findings else EXIT_OK
+
+
+def _names_context(matter_arg):
+    from redact_local import check, pipeline
+    from redact_local.errors import UsageError
+    from redact_local.placeholders import Registry
+
+    matter, _scope = pipeline.matter_paths(matter_arg)
+    private = matter / pipeline.PRIVATE
+    names_path = private / "names.txt"
+    if not names_path.is_file():
+        raise UsageError("This matter has no names.txt yet. Run it first.")
+    reg = Registry(private / "key.csv")
+    return matter, private, names_path, check.key_spellings(reg), check.current_lines(names_path, reg)
+
+
+def cmd_where(args) -> int:
+    from redact_local import names
+
+    _matter, _private, names_path, spellings, current = _names_context(args.matter)
+    for ph, loc in names.where(names_path, args.placeholders, spellings, current).items():
+        if loc.lines:
+            role = f", {loc.role}" if loc.role else ""
+            print(f"{ph}: names.txt line {', '.join(map(str, loc.lines))} ({loc.state}{role})")
+        elif loc.state == "key only":
+            print(f"{ph}: in the key, but on no names.txt line ('roles' or 'adopt' adds one)")
+        else:
+            print(f"{ph}: not in names.txt or the key")
+    return EXIT_OK
+
+
+_CONTACT = re.compile(r"-(?:EMAIL|PHONE|HANDLE)(?:-\d+)?$")
+
+
+def cmd_adopt(args) -> int:
+    from redact_local import check, names
+    from redact_local.errors import UsageError
+
+    matter, private, names_path, spellings, current = _names_context(args.matter)
+    findings = check.load_findings(private)
+    additions = []
+    for raw in args.ids:
+        fid = raw.strip().upper()
+        f = findings.get(fid)
+        if f is None:
+            raise UsageError(f"No finding {fid} in the last check. Run 'redact-local check' again.")
+        ph = _CONTACT.sub("", f.get("placeholder") or "")
+        if f.get("kind") not in {"known", "word", "neighbour"} or not ph or not (
+                f.get("category") in {"PERSON", "NAME"} or ph != f.get("placeholder")):
+            raise UsageError(f"{fid} isn't tied to a person, so there is no names.txt line to add it to. "
+                             "Check it in the report; if it is personal data, add it to names.txt yourself.")
+        additions.append((ph, f.get("value") or ""))
+    result = names.add_spellings(names_path, additions, spellings, current)
+    print(f"names.txt: {_plural(result.added, 'spelling')} added, {_plural(result.activated, 'line')} made active"
+          + (f", {_plural(result.created, 'line')} added for people only in the key" if result.created else ""))
+    print(f"  Backup of the previous names.txt: {names_path.with_suffix('.txt.bak')}")
+    print(f"  Changed line(s): {', '.join(map(str, result.lines)) or 'none'}")
+    print(f"  File: {names_path}")
+    print(f'Rerun to apply, then check again: redact-local run "{matter}"')
     return EXIT_OK
 
 
@@ -259,6 +376,22 @@ def build_parser() -> argparse.ArgumentParser:
     ro.add_argument("assignments", nargs="+", metavar="PLACEHOLDER=ROLE",
                     help="e.g. PERSON-4=OWNER, PERSON-9=KEEP (not a person: leave it in), PERSON-5= (active, no role).")
     ro.set_defaults(func=cmd_roles)
+
+    ch = sub.add_parser("check", help="Look for personal data the run left in the output (counts and ids only; "
+                                      "exit 5 if anything is found).")
+    ch.add_argument("matter", help="The matter folder.")
+    ch.add_argument("--config", default=None, help="Config folder (default: the repo's config/).")
+    ch.set_defaults(func=cmd_check)
+
+    wh = sub.add_parser("where", help="Which names.txt line a placeholder is on now.")
+    wh.add_argument("matter", help="The matter folder.")
+    wh.add_argument("placeholders", nargs="+", metavar="PLACEHOLDER", help="e.g. PERSON-26 CLIENT")
+    wh.set_defaults(func=cmd_where)
+
+    ad = sub.add_parser("adopt", help="Add the word from a check finding to that person's names.txt line.")
+    ad.add_argument("matter", help="The matter folder.")
+    ad.add_argument("ids", nargs="+", metavar="ID", help="Finding ids from the last check, e.g. F3 F7.")
+    ad.set_defaults(func=cmd_adopt)
 
     pr = sub.add_parser("profiles", help="List the available profiles.")
     pr.add_argument("--config", default=None)

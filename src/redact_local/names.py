@@ -454,6 +454,157 @@ def _merged_line(alias_lists: list[list[str]], role: str | None, note: str) -> s
     return f"{new.ljust(_SUGGEST_COLUMN)}  {note}" if note else new
 
 
+class _NamesIndex:
+    """Which names.txt line(s) hold each placeholder. The order of lookups is explained in
+    ``set_roles``; ``where`` and ``add_spellings`` use the same one."""
+
+    def __init__(self, text: str, key_values: dict[str, list[str]], line_placeholders: dict[int, str] | None):
+        self.lines = text.splitlines()
+        self.ours = [line.rstrip() in _BOILERPLATE or line.startswith(SUGGEST_HEADER) for line in self.lines]
+        self.line_keys = []
+        for line, skip in zip(self.lines, self.ours):
+            aliases, _note = _line_parts(normalize_entry(line))
+            self.line_keys.append(set() if skip else {k for k in (_person_key(a) for a in aliases) if k})
+        self.line_placeholders = line_placeholders or {}
+        self.known_lines = {ln - 1 for ln in self.line_placeholders}
+        self.key_values = key_values
+
+    def lines_for(self, ph: str) -> tuple[list[int], list[str]]:
+        """(line indexes, spellings to add) for one placeholder."""
+        lines, ours = self.lines, self.ours
+        found = sorted(ln - 1 for ln, p in self.line_placeholders.items() if p == ph)
+        if found:
+            return found, []
+        note = re.compile(rf"#\s*\[{re.escape(ph)}\](?![\w-])")
+        noted = [i for i, line in enumerate(lines) if not ours[i] and "=>" in line and note.search(line)]
+        commented = [i for i in noted if lines[i].lstrip().startswith("#")]
+        unknown = [i for i in noted if i not in self.known_lines]
+        if commented or unknown:
+            return [(commented or unknown)[0]], []
+        spellings = [s for s in (" ".join(re.sub(r"=>|[|#]", " ", v).split()) for v in self.key_values.get(ph, [])) if s]
+        keys = {k for k in (_person_key(s) for s in spellings) if k}
+        by_key = [i for i, lk in enumerate(self.line_keys) if lk & keys]
+        if by_key:
+            return [by_key[0]], []
+        if spellings:
+            return [], [max(spellings, key=lambda v: (len(v.split()) >= 2, len(v)))]
+        return [], []
+
+
+def _line_role(line: str) -> str | None:
+    """The role typed after => on a names.txt line (commented or not), or None."""
+    body = _INLINE_COMMENT.sub("", line.strip().lstrip("#").strip())
+    if "=>" not in body:
+        return None
+    return body.rsplit("=>", 1)[1].strip() or None
+
+
+def _norm_placeholder(raw: str) -> str:
+    ph = raw.strip().strip("[]").upper()
+    if not _PLACEHOLDER.fullmatch(ph):
+        raise UsageError("A placeholder should look like PERSON-4 (with or without the brackets).")
+    return ph
+
+
+@dataclass
+class Location:
+    lines: list[int]    # 1-based names.txt line numbers
+    state: str          # active | commented out | key only | not found
+    role: str = ""      # active lines: "no role", "a role" or "KEEP" (the role text is never shown)
+
+
+def where(path: Path, placeholders: list[str], key_values: dict[str, list[str]],
+          line_placeholders: dict[int, str] | None = None) -> dict[str, Location]:
+    """The names.txt line each placeholder is on now (line numbers move when lines merge)."""
+    ix = _NamesIndex(path.read_text(encoding="utf-8-sig"), key_values, line_placeholders)
+    out = {}
+    for raw in placeholders:
+        ph = _norm_placeholder(raw)
+        idxs, extra = ix.lines_for(ph)
+        if not idxs:
+            out[ph] = Location([], "key only" if extra else "not found")
+            continue
+        line = ix.lines[idxs[0]]
+        if line.lstrip().startswith("#"):
+            out[ph] = Location([i + 1 for i in idxs], "commented out")
+            continue
+        role = _line_role(line)
+        out[ph] = Location([i + 1 for i in idxs], "active",
+                           "no role" if not role else ("KEEP" if role.upper() == KEEP_ROLE else "a role"))
+    return out
+
+
+@dataclass
+class SpellingsResult:
+    added: int = 0       # spellings added to existing lines
+    activated: int = 0   # commented-out lines made active
+    created: int = 0     # new lines (a person in the key but on no line)
+    lines: list[int] = field(default_factory=list)
+
+
+def add_spellings(path: Path, additions: list[tuple[str, str]], key_values: dict[str, list[str]],
+                  line_placeholders: dict[int, str] | None = None) -> SpellingsResult:
+    """Add spellings to the names.txt line of each placeholder: [("PERSON-26", "Jane")].
+
+    The line is found as ``set_roles`` finds it. A commented-out line becomes active; its role
+    and note are kept. A placeholder that is only in the key gets a new line. All or nothing,
+    and a ``names.txt.bak`` is kept. Used by ``adopt`` so a value never has to be typed."""
+    text = path.read_text(encoding="utf-8-sig")
+    ix = _NamesIndex(text, key_values, line_placeholders)
+    lines = list(ix.lines)
+    plan: dict = {}
+    missing = []
+    for raw, value in additions:
+        ph = _norm_placeholder(raw)
+        value = _strip_quotes(" ".join(re.sub(r"=>|[|#]", " ", value).split()))
+        if not value:
+            continue
+        idxs, extra = ix.lines_for(ph)
+        if idxs:
+            plan.setdefault(idxs[0], []).append(value)
+        elif extra:
+            plan.setdefault(("new", ph), list(extra)).append(value)
+        else:
+            missing.append(ph)
+    if missing:
+        raise UsageError(f"Not in names.txt or the key, so nothing was changed: {', '.join(sorted(set(missing)))}.")
+
+    result = SpellingsResult()
+    appended = []
+    for target, values in plan.items():
+        if isinstance(target, int):
+            line = lines[target]
+            aliases, note = _line_parts(line)
+            seen = {a.casefold() for a in aliases}
+            new = [v for v in dict.fromkeys(values) if v.casefold() not in seen]
+            result.added += len(new)
+            if line.lstrip().startswith("#"):
+                result.activated += 1
+            role = _line_role(line)
+            body = " | ".join([*aliases, *new])
+            body = f"{body} => {role}" if role else f"{body} =>"
+            lines[target] = f"{body.ljust(_SUGGEST_COLUMN)}  {note}" if note else body
+            result.lines.append(target + 1)
+        else:
+            appended.append(_merged_line([values], None, ""))
+            result.created += 1
+    for line in appended:
+        lines.append(line)
+        result.lines.append(len(lines))
+    if not result.lines:
+        return result
+    backup = path.with_suffix(".txt.bak")
+    backup.write_text(text, encoding="utf-8")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        parse(path)
+    except SafeError:
+        path.write_text(text, encoding="utf-8")   # put it back as it was
+        raise
+    result.lines.sort()
+    return result
+
+
 def set_roles(path: Path, assignments: list[tuple[str, str]], key_values: dict[str, list[str]],
               line_placeholders: dict[int, str] | None = None) -> RolesResult:
     """Give names.txt lines roles by placeholder, e.g. [("PERSON-4", "OWNER"), ("PERSON-9", "KEEP")].
@@ -471,34 +622,9 @@ def set_roles(path: Path, assignments: list[tuple[str, str]], key_values: dict[s
     written. Errors name placeholders only, never a value.
     """
     text = path.read_text(encoding="utf-8-sig")
-    lines = text.splitlines()
-    ours = [line.rstrip() in _BOILERPLATE or line.startswith(SUGGEST_HEADER) for line in lines]
-    line_keys = []
-    for line, skip in zip(lines, ours):
-        aliases, _note = _line_parts(normalize_entry(line))
-        line_keys.append(set() if skip else {k for k in (_person_key(a) for a in aliases) if k})
-    known_lines = {ln - 1 for ln in (line_placeholders or {})}
-
-    def lines_for(ph: str) -> tuple[list[int], list[str]]:
-        """(line indexes, spellings to add) for one placeholder."""
-        if line_placeholders:
-            found = sorted(ln - 1 for ln, p in line_placeholders.items() if p == ph)
-            if found:
-                return found, []
-        note = re.compile(rf"#\s*\[{re.escape(ph)}\](?![\w-])")
-        noted = [i for i, line in enumerate(lines) if not ours[i] and "=>" in line and note.search(line)]
-        commented = [i for i in noted if lines[i].lstrip().startswith("#")]
-        unknown = [i for i in noted if i not in known_lines]
-        if commented or unknown:
-            return [(commented or unknown)[0]], []
-        spellings = [s for s in (" ".join(re.sub(r"=>|[|#]", " ", v).split()) for v in key_values.get(ph, [])) if s]
-        keys = {k for k in (_person_key(s) for s in spellings) if k}
-        by_key = [i for i, lk in enumerate(line_keys) if lk & keys]
-        if by_key:
-            return [by_key[0]], []
-        if spellings:
-            return [], [max(spellings, key=lambda v: (len(v.split()) >= 2, len(v)))]
-        return [], []
+    ix = _NamesIndex(text, key_values, line_placeholders)
+    lines = ix.lines
+    lines_for = ix.lines_for
 
     plans = []        # (line indexes, extra spellings, role, label for errors)
     missing, claimed = [], {}
