@@ -96,6 +96,15 @@ def test_possible_miss_levels():
     assert _miss_level(text, *at("Ylvarra"), "not in the English word list", []) == "likely"     # after a closing
     assert _miss_level(text, *at("Vqzpl"), "not in the English word list", []) == "low"
     assert _miss_level(text, *at("Vqzpl"), "proper noun not on any list", []) == "check"
+    # In OCR'd text the model calls most noise a proper noun: one word drops to low, a run doesn't.
+    from redact_local.detect import ocr_ranges
+
+    scan = "--- page 1 ---\n[OCR]\nPart Brshnlp ok\nZelphine Qorvath signed\n"
+    ocr = ocr_ranges(scan)
+    one = (scan.index("Brshnlp"), scan.index("Brshnlp") + 7)
+    two = (scan.index("Zelphine"), scan.index("Qorvath") + 7)
+    assert _miss_level(scan, *one, "proper noun not on any list", [], ocr) == "low"
+    assert _miss_level(scan, *two, "proper noun not on any list", [], ocr) == "check"
 
 
 def test_summary_and_review_list_misses_by_level(matter):

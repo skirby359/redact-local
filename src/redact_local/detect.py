@@ -740,7 +740,8 @@ class Engine:
         for a, b in patterns.long_numbers(text):
             if not any(_overlaps(a, b, c0, c1) for c0, c1 in numbers_covered) and not re.fullmatch(r"\d{4}[-/ ]\d{1,2}[-/ ]\d{1,2}|\d{1,2}[-/ ]\d{1,2}[-/ ]\d{4}", text[a:b]):
                 misses.append((a, b, text[a:b], "long number left in"))
-        result.misses = [(a, b, v, why, _miss_level(text, a, b, why, result.spans)) for a, b, v, why in misses]
+        ocr = ocr_ranges(text)
+        result.misses = [(a, b, v, why, _miss_level(text, a, b, why, result.spans, ocr)) for a, b, v, why in misses]
 
 
 # How likely a possible miss is to be personal data, so the review sheet can list the
@@ -751,11 +752,13 @@ _PRONOUN_LINE = re.compile(r"(?i)\b(?:she|he|they)\b\W{0,4}\b(?:her|him|them)\b"
 _BESIDE = re.compile(r"[ \t,'’\"(]{0,3}")
 
 
-def _miss_level(text: str, a: int, b: int, why: str, spans: list[Span]) -> str:
+def _miss_level(text: str, a: int, b: int, why: str, spans: list[Span],
+                ocr: list[tuple[int, int]] | None = None) -> str:
     """likely: right next to a redacted name (the half nobody listed), or on an email header,
-    a name field or a signature line. low: a word the model didn't take for a proper noun.
-    check: everything else (proper nouns, things the model called a place or a business,
-    long numbers)."""
+    a name field or a signature line. low: a word the model didn't take for a proper noun,
+    or a single "proper noun" inside OCR'd text, where the model calls most OCR noise and
+    catalogue codes proper nouns. check: everything else (proper nouns, things the model
+    called a place or a business, long numbers)."""
     for s in spans:
         if s.category not in {"PERSON", "NAME"} or s.kind not in {"", "name"}:
             continue
@@ -770,7 +773,12 @@ def _miss_level(text: str, a: int, b: int, why: str, spans: list[Span]) -> str:
     nxt = text[le + 1:].split("\n", 1)[0] if le < len(text) else ""
     if _CLOSING.match(prev) or _PRONOUN_LINE.search(nxt):
         return "likely"
-    return "low" if why.startswith("not in the English") else "check"
+    if why.startswith("not in the English"):
+        return "low"
+    if (why.startswith("proper noun") and len(text[a:b].split()) == 1
+            and any(o0 <= a < o1 for o0, o1 in (ocr or []))):
+        return "low"
+    return "check"
 
 
 def _trim(text: str, start: int, end: int) -> tuple[int, int]:

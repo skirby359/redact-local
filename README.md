@@ -331,7 +331,9 @@ strict** even though it's public record: never run voter files through `court-re
   - **Worth a look**: proper nouns no list explains, words the model called a place or a
     business, long numbers.
   - **Probably ordinary words** (collapsed): capitalized words the model didn't take for
-    names.
+    names, and single words in OCR'd text, where the model calls most OCR noise and
+    catalogue codes proper nouns. Runs of two or more words in OCR'd text stay in
+    "worth a look".
 
   The run prints the count in each group, and `_summary.json` has them under
   `possible_misses_by_level`.
